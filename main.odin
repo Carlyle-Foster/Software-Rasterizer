@@ -151,20 +151,15 @@ draw_model :: proc(m: Model) {
 
 draw_triangle :: #force_inline  proc(tri: Tri_3D, color: Color) #no_bounds_check {
     projected_tri := Tri_2D{tri[0].xy, tri[1].xy, tri[2].xy}
-    b_box := get_triangle_bounding_box(projected_tri)
+    b_box := get_clipped_bounding_box(projected_tri)
     c := rl.Color {
         u8(color.r * 255),
         u8(color.g * 255),
         u8(color.b * 255),
         u8(color.a * 255),
     }
-    start_y := clamp(b_box.y, 0, 1)
-    start_x := clamp(b_box.x, 0, 1)
-    end_y := clamp(b_box.y + b_box.height, 0, 1)
-    end_x := clamp(b_box.x + b_box.width, 0, 1)
-
-    for y := start_y; y < end_y; y += 1. / (HEIGHT + 1) {
-        for x := start_x; x < end_x; x += 1. / (WIDTH + 1) {
+    for y := b_box.top; y < b_box.bottom; y += 1. / (HEIGHT + 1) {
+        for x := b_box.left; x < b_box.right; x += 1. / (WIDTH + 1) {
             if is_inside_triangle({x, y}, projected_tri) {
                 g_target[int(y*HEIGHT)*WIDTH + int(x*WIDTH)] = c
             }            
@@ -172,16 +167,19 @@ draw_triangle :: #force_inline  proc(tri: Tri_3D, color: Color) #no_bounds_check
     }
 }
 
-get_triangle_bounding_box :: #force_inline proc(tri: Tri_2D) -> rl.Rectangle {
-    box_x := min(tri[0].x, tri[1].x, tri[2].x)
-    box_y := min(tri[0].y, tri[1].y, tri[2].y)
-    box_width := max(tri[0].x, tri[1].x, tri[2].x) - box_x
-    box_height := max(tri[0].y, tri[1].y, tri[2].y) - box_y
+Box :: struct {
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+}
+
+get_clipped_bounding_box :: #force_inline proc(tri: Tri_2D) -> Box {
     return {
-        x = box_x,
-        y = box_y,
-        width = box_width,
-        height = box_height,
+        left    =   clamp(min(tri[0].x, tri[1].x, tri[2].x), 0,1),
+        right   =   clamp(max(tri[0].x, tri[1].x, tri[2].x), 0,1),
+        top     =   clamp(min(tri[0].y, tri[1].y, tri[2].y), 0,1),
+        bottom  =   clamp(max(tri[0].y, tri[1].y, tri[2].y), 0,1),
     }
 }
 
