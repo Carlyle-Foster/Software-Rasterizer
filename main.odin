@@ -95,7 +95,7 @@ is_inside_triangle :: #force_inline proc(point: [2]f32, tri: Tri_2D) -> bool {
 is_right_of_line :: #force_inline proc(point: [2]f32, line: [2]f32) -> bool {
     perp := [2]f32{line.y, -line.x}
 
-    return linalg.dot(point, perp) > 0 && perp != {}
+    return linalg.dot(point, perp) > 0
 }
 
 main :: proc() {
@@ -231,5 +231,5 @@ import_obj_file :: proc(name: string) -> Model {
             }            
         }
     }
-    return create_model(tris[:], position={2.5,2.5,.01}, scale=0.2, color=DEEP)
+    return create_model(tris[:], position={2.5,2.5,.01}, scale=0.1, color=DEEP)
 }
