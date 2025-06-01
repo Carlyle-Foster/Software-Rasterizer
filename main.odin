@@ -8,7 +8,7 @@ import "core:mem"
 import "core:os/os2"
 import "core:strings"
 import "core:strconv"
-import "core:slice"
+// import "core:slice"
 
 import rl "vendor:raylib"
 
@@ -68,9 +68,7 @@ get_transform :: proc(m: Model) -> matrix[4, 4]f32 {
     return linalg.matrix4_scale(m.scale) * linalg.matrix4_translate(m.position) * rotation
 }
 
-g_triangles: [dynamic]TriObject
-
-g_target: [WIDTH*HEIGHT][4]u8
+g_target: [WIDTH*HEIGHT]rl.Color
 
 translate_face :: #force_inline proc(face: Tri_3D, mtx: matrix[4, 4]f32) -> Tri_3D {
     t := Tri_3D {
@@ -106,10 +104,9 @@ main :: proc() {
         .Line,
     })
     defer log.destroy_console_logger(context.logger)
-    defer delete(g_triangles)
 
     rl.SetTargetFPS(60)
-    rl.InitWindow(WIDTH, HEIGHT, "SoftWare Rastertizer 0.97")
+    rl.InitWindow(WIDTH, HEIGHT, "SoftWare Rasterizer 0.97")
 
     image := rl.Image{
         data = &g_target,
@@ -152,20 +149,24 @@ draw_model :: proc(m: Model) {
     }
 }
 
-draw_triangle :: proc(tri: Tri_3D, color: Color) {
+draw_triangle :: #force_inline  proc(tri: Tri_3D, color: Color) #no_bounds_check {
     projected_tri := Tri_2D{tri[0].xy, tri[1].xy, tri[2].xy}
     b_box := get_triangle_bounding_box(projected_tri)
-    for y := b_box.y; y < b_box.y + b_box.height; y += 1. / (HEIGHT + 1) {
-        for x := b_box.x; x < b_box.x + b_box.width; x += 1. / (WIDTH + 1) {
+    c := rl.Color {
+        u8(color.r * 255),
+        u8(color.g * 255),
+        u8(color.b * 255),
+        u8(color.a * 255),
+    }
+    start_y := clamp(b_box.y, 0, 1)
+    start_x := clamp(b_box.x, 0, 1)
+    end_y := clamp(b_box.y + b_box.height, 0, 1)
+    end_x := clamp(b_box.x + b_box.width, 0, 1)
+
+    for y := start_y; y < end_y; y += 1. / (HEIGHT + 1) {
+        for x := start_x; x < end_x; x += 1. / (WIDTH + 1) {
             if is_inside_triangle({x, y}, projected_tri) {
-                if px, ok := slice.get_ptr(g_target[:], int(y*HEIGHT)*WIDTH + int(x*WIDTH)); ok {
-                    px^ = {
-                        u8(color.r * 255),
-                        u8(color.g * 255),
-                        u8(color.b * 255),
-                        u8(color.a * 255),
-                    }
-                }
+                g_target[int(y*HEIGHT)*WIDTH + int(x*WIDTH)] = c
             }            
         }
     }
