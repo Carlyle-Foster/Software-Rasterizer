@@ -70,7 +70,7 @@ create_entity :: proc(model: int, position: [3]f32, scale: f32, color: Color) ->
 get_transform :: proc(e: Entity) -> matrix[4, 4]f32 {
     rotation := linalg.matrix4_rotate(e.yaw, [3]f32{0,1,0}) * linalg.matrix4_rotate(e.pitch, [3]f32{1,0,0}) * linalg.matrix4_rotate(e.roll, [3]f32{0,0,1})
 
-    return linalg.matrix4_scale(e.scale) * linalg.matrix4_translate(e.position) * rotation
+    return linalg.matrix4_translate(e.position) * linalg.matrix4_scale(e.scale) * rotation
 }
 
 g_target: [WIDTH*HEIGHT]rl.Color
@@ -126,8 +126,8 @@ main :: proc() {
     defer delete(new.faces)
     append(&g_models, new)
 
-    append(&g_entities, create_entity(0, {8.0, 7.0, .01}, .1, DEEP))
-    append(&g_entities, create_entity(0, {2.5, 2.5, .01}, .05, RED))
+    append(&g_entities, create_entity(0, {.25, .25, .01}, .1, DEEP))
+    append(&g_entities, create_entity(0, {.83, .87, .01}, .05, RED))
 
     for !rl.WindowShouldClose() {
         mem.set(&g_target, 0, len(g_target) * size_of(g_target[0]))
