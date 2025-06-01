@@ -37,15 +37,46 @@ TriObject :: struct {
     mtx: matrix[4, 4]f32,
 }
 
-g_triangles := [dynamic]TriObject {}
+Model :: struct {
+    faces: []Tri_3D,
+    position: [3]f32,
+    scale: f32,
+    yaw: f32,
+    pitch: f32,
+    roll: f32,
+    color: Color,
+}
+
+create_model :: proc(faces: []Tri_3D, position: [3]f32, scale: f32, color: Color) -> Model {
+    return {
+        faces=faces,
+        position=position,
+        scale=scale,
+        yaw=0,
+        pitch=0,
+        roll=0,
+        color=color,
+    }
+}
+
+g_models: [dynamic]Model
+
+get_transform :: proc(m: Model) -> matrix[4, 4]f32 {
+
+    rotation := linalg.matrix4_rotate(m.yaw, [3]f32{0,1,0}) * linalg.matrix4_rotate(m.pitch, [3]f32{1,0,0}) * linalg.matrix4_rotate(m.roll, [3]f32{0,0,1})
+
+    return linalg.matrix4_scale(m.scale) * linalg.matrix4_translate(m.position) * rotation
+}
+
+g_triangles: [dynamic]TriObject
 
 g_target: [WIDTH*HEIGHT][4]u8
 
-get_triangle :: proc(tri: TriObject) -> Tri_3D {
+translate_face :: #force_inline proc(face: Tri_3D, mtx: matrix[4, 4]f32) -> Tri_3D {
     t := Tri_3D {
-        (tri.mtx * [4]f32{tri.inner[0].x, tri.inner[0].y, tri.inner[0].z, 1}).xyz,
-        (tri.mtx * [4]f32{tri.inner[1].x, tri.inner[1].y, tri.inner[1].z, 1}).xyz,
-        (tri.mtx * [4]f32{tri.inner[2].x, tri.inner[2].y, tri.inner[2].z, 1}).xyz,
+        (mtx * [4]f32{face[0].x, face[0].y, face[0].z, 1}).xyz,
+        (mtx * [4]f32{face[1].x, face[1].y, face[1].z, 1}).xyz,
+        (mtx * [4]f32{face[2].x, face[2].y, face[2].z, 1}).xyz,
     }
     return t
 }
@@ -90,16 +121,13 @@ main :: proc() {
     texture := rl.LoadTextureFromImage(image)
 
     new := import_obj_file("cube.obj")
-    for &obj in new {
-        obj.mtx *= 0.1
-        obj.mtx *= linalg.matrix4_translate([3]f32{2.5, 2.5, 0})
-        append(&g_triangles, obj)
-    }
+    defer delete(new.faces)
+    append(&g_models, new)
 
     for !rl.WindowShouldClose() {
         mem.set(&g_target, 0, len(g_target) * size_of(g_target[0]))
-        for obj in g_triangles {
-            draw_triangle(get_triangle(obj), obj.color)
+        for m in g_models {
+            draw_model(m)
         }
         rl.UpdateTexture(texture, &g_target)
 
@@ -108,13 +136,19 @@ main :: proc() {
         rl.DrawTexture(texture, 0, 0, rl.WHITE)
         rl.EndDrawing()
 
-        // g_triangles[0].mtx *= linalg.matrix4_rotate(.05, [3]f32{1, 0.03, 0})
-        // g_triangles[1].mtx *= linalg.matrix4_rotate(.023, [3]f32{0, 1, 0.02})
-        for &obj in g_triangles {
-            obj.mtx *= linalg.matrix4_rotate(0.02, [3]f32{0, 1, -0.33})
+        for &m in g_models {
+            m.pitch += 0.01
+            m.yaw += 0.002
         }
 
         free_all(context.temp_allocator)
+    }
+}
+
+draw_model :: proc(m: Model) {
+    mtx := get_transform(m)
+    for face in m.faces {
+        draw_triangle(translate_face(face, mtx), m.color)
     }
 }
 
@@ -150,7 +184,7 @@ get_triangle_bounding_box :: #force_inline proc(tri: Tri_2D) -> rl.Rectangle {
     }
 }
 
-import_obj_file :: proc(name: string) -> [dynamic]TriObject {
+import_obj_file :: proc(name: string) -> Model {
     data, err := os2.read_entire_file_from_path(name, context.allocator)
     assert(err == nil)
     defer delete(data)
@@ -160,7 +194,7 @@ import_obj_file :: proc(name: string) -> [dynamic]TriObject {
     points := make([dynamic][3]f32)
     defer delete(points)
 
-    tris := make([dynamic]TriObject)
+    tris := make([dynamic]Tri_3D)
 
     for line in strings.split_lines_iterator(&contents) {
         if strings.starts_with(line, "#") { continue }
@@ -189,7 +223,7 @@ import_obj_file :: proc(name: string) -> [dynamic]TriObject {
                     line[i] = point
                 }
                 else {
-                    obj := TriObject{inner={line[0], line[1], point}, color=DEEP, mtx=1}
+                    obj := Tri_3D{line[0], line[1], point}
                     append(&tris, obj)
                     line[1] = point
                 }
@@ -197,5 +231,5 @@ import_obj_file :: proc(name: string) -> [dynamic]TriObject {
             }            
         }
     }
-    return tris
+    return create_model(tris[:], position={2.5,2.5,.01}, scale=0.2, color=DEEP)
 }
