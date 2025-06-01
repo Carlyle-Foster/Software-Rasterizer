@@ -39,6 +39,12 @@ TriObject :: struct {
 
 Model :: struct {
     faces: []Tri_3D,
+}
+
+g_models: [dynamic]Model
+
+Entity :: struct {
+    model: int,
     position: [3]f32,
     scale: f32,
     yaw: f32,
@@ -47,9 +53,11 @@ Model :: struct {
     color: Color,
 }
 
-create_model :: proc(faces: []Tri_3D, position: [3]f32, scale: f32, color: Color) -> Model {
+g_entities: [dynamic]Entity
+
+create_entity :: proc(model: int, position: [3]f32, scale: f32, color: Color) -> Entity {
     return {
-        faces=faces,
+        model=model,
         position=position,
         scale=scale,
         yaw=0,
@@ -59,13 +67,10 @@ create_model :: proc(faces: []Tri_3D, position: [3]f32, scale: f32, color: Color
     }
 }
 
-g_models: [dynamic]Model
+get_transform :: proc(e: Entity) -> matrix[4, 4]f32 {
+    rotation := linalg.matrix4_rotate(e.yaw, [3]f32{0,1,0}) * linalg.matrix4_rotate(e.pitch, [3]f32{1,0,0}) * linalg.matrix4_rotate(e.roll, [3]f32{0,0,1})
 
-get_transform :: proc(m: Model) -> matrix[4, 4]f32 {
-
-    rotation := linalg.matrix4_rotate(m.yaw, [3]f32{0,1,0}) * linalg.matrix4_rotate(m.pitch, [3]f32{1,0,0}) * linalg.matrix4_rotate(m.roll, [3]f32{0,0,1})
-
-    return linalg.matrix4_scale(m.scale) * linalg.matrix4_translate(m.position) * rotation
+    return linalg.matrix4_scale(e.scale) * linalg.matrix4_translate(e.position) * rotation
 }
 
 g_target: [WIDTH*HEIGHT]rl.Color
@@ -121,10 +126,13 @@ main :: proc() {
     defer delete(new.faces)
     append(&g_models, new)
 
+    append(&g_entities, create_entity(0, {8.0, 7.0, .01}, .1, DEEP))
+    append(&g_entities, create_entity(0, {2.5, 2.5, .01}, .05, RED))
+
     for !rl.WindowShouldClose() {
         mem.set(&g_target, 0, len(g_target) * size_of(g_target[0]))
-        for m in g_models {
-            draw_model(m)
+        for e in g_entities {
+            draw_entity(e)
         }
         rl.UpdateTexture(texture, &g_target)
 
@@ -133,19 +141,20 @@ main :: proc() {
         rl.DrawTexture(texture, 0, 0, rl.WHITE)
         rl.EndDrawing()
 
-        for &m in g_models {
-            m.pitch += 0.01
-            m.yaw += 0.002
+        for &e, i in g_entities {
+            s := f32(i+1)
+            e.pitch += 0.01 / s
+            e.yaw += 0.002 * s
         }
 
         free_all(context.temp_allocator)
     }
 }
 
-draw_model :: proc(m: Model) {
-    mtx := get_transform(m)
-    for face in m.faces {
-        draw_triangle(translate_face(face, mtx), m.color)
+draw_entity :: proc(e: Entity) {
+    mtx := get_transform(e)
+    for face in g_models[e.model].faces {
+        draw_triangle(translate_face(face, mtx), e.color)
     }
 }
 
@@ -230,5 +239,6 @@ import_obj_file :: proc(name: string) -> Model {
             }            
         }
     }
-    return create_model(tris[:], position={2.5,2.5,.01}, scale=0.1, color=DEEP)
+    return Model{tris[:]}
+    // return create_model(tris[:], position={2.5,2.5,.01}, scale=0.1, color=DEEP)
 }
