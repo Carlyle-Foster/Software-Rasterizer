@@ -26,7 +26,7 @@ DEEP    :: Color {0.12, 0.15, 0.62, 1}
 WIDTH :: 800
 HEIGHT :: 600
 
-FOV :: 110
+FOV :: 60
 
 Tri_2D :: [3][2]f32
 Tri_3D :: [3][3]f32
@@ -88,7 +88,7 @@ is_inside_triangle :: #force_inline proc(point: [2]f32, tri: Tri_2D) -> bool {
     for i in 0..<3  {
         base := tri[i]
         side := tri[(i+1)%3] - base
-        if is_right_of_line(point - base, side) {
+        if !is_right_of_line(point - base, side) {
             return false
         }
     }
@@ -126,8 +126,7 @@ main :: proc() {
     defer delete(new.faces)
     append(&g_models, new)
 
-    append(&g_entities, create_entity(0, {.25, .25, .01}, .1, DEEP))
-    append(&g_entities, create_entity(0, {.83, .87, .01}, .05, RED))
+    append(&g_entities, create_entity(0, {0, 0, .8}, .1, DEEP))
 
     for !rl.WindowShouldClose() {
         mem.set(&g_target, 0, len(g_target) * size_of(g_target[0]))
@@ -153,27 +152,29 @@ main :: proc() {
 
 draw_entity :: proc(e: Entity) {
     mtx := get_transform(e)
-    for face in g_models[e.model].faces {
-        draw_triangle(translate_face(face, mtx), e.color)
+    faces := &g_models[e.model].faces
+    for face, i in faces {
+        c := transmute([4]u8)(u32((f32(i) / f32(len(faces))) * 16_000_000))
+        color := rl.Color{c.r, c.g, c.b, 255}
+        draw_triangle(translate_face(face, mtx), color)
     }
 }
 
-draw_triangle :: #force_inline  proc(tri: Tri_3D, color: Color) #no_bounds_check {
-    projected_tri := Tri_2D{tri[0].xy, tri[1].xy, tri[2].xy}
+draw_triangle :: #force_inline  proc(tri: Tri_3D, color: rl.Color) #no_bounds_check {
+    projected_tri := Tri_2D{world_to_screen(tri[0]), world_to_screen(tri[1]), world_to_screen(tri[2])}
     b_box := get_clipped_bounding_box(projected_tri)
-    c := rl.Color {
-        u8(color.r * 255),
-        u8(color.g * 255),
-        u8(color.b * 255),
-        u8(color.a * 255),
-    }
     for y := b_box.top; y < b_box.bottom; y += 1. / (HEIGHT + 1) {
         for x := b_box.left; x < b_box.right; x += 1. / (WIDTH + 1) {
             if is_inside_triangle({x, y}, projected_tri) {
-                g_target[int(y*HEIGHT)*WIDTH + int(x*WIDTH)] = c
+                g_target[int(y*HEIGHT)*WIDTH + int(x*WIDTH)] = color
             }            
         }
     }
+}
+
+world_to_screen :: proc(point: [3]f32) -> [2]f32 {
+    depth := point.z
+    return {point.x/depth + .5, point.y/depth + .5}
 }
 
 Box :: struct {
