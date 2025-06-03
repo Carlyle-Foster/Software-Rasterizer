@@ -69,6 +69,7 @@ get_transform :: proc(e: Entity) -> matrix[4, 4]f32 {
 }
 
 g_target: [WIDTH*HEIGHT]rl.Color
+g_depth_buffer: [WIDTH*HEIGHT]f32
 
 translate_face :: #force_inline proc(face: Tri_3D, mtx: matrix[4, 4]f32) -> Tri_3D {
     t := Tri_3D {
@@ -117,14 +118,17 @@ main :: proc() {
     }
     texture := rl.LoadTextureFromImage(image)
 
-    new := import_obj_file("cube.obj")
+    new := import_obj_file("suzanne.obj")
     defer delete(new.faces)
     append(&g_models, new)
 
-    append(&g_entities, create_entity(0, {0, 0, 5}, 1, DEEP))
+    append(&g_entities, create_entity(0, {0, 0, 2}, 1, DEEP))
 
     for !rl.WindowShouldClose() {
         mem.set(&g_target, 0, len(g_target) * size_of(g_target[0]))
+        for &d in g_depth_buffer {
+            d = math.INF_F32
+        }
         for e in g_entities {
             draw_entity(e)
         }
@@ -137,7 +141,7 @@ main :: proc() {
 
         for &e, i in g_entities {
             s := f32(i+1)
-            e.pitch += 0.01 / s
+            // e.pitch += 0.01 / s
             e.yaw += 0.002 * s
         }
 
@@ -160,11 +164,18 @@ draw_triangle :: #force_inline  proc(tri: Tri_3D, color: rl.Color) #no_bounds_ch
     b_box := get_clipped_bounding_box(projected_tri)
     for y := b_box.top; y < b_box.bottom; y += 1 {
         for x := b_box.left; x < b_box.right; x += 1 {
-            if is_inside_triangle({x, y}, projected_tri) {
-                g_target[y*WIDTH + x] = color
+            i := y*WIDTH + x
+            depth := get_depth(tri)
+            if is_inside_triangle({x, y}, projected_tri) && depth < g_depth_buffer[i] {
+                g_target[i] = color
+                g_depth_buffer[i] = depth
             }            
         }
     }
+}
+
+get_depth :: proc(tri: Tri_3D) -> f32 {
+    return (tri[0].z + tri[1].z + tri[2].z) / 3
 }
 
 world_to_screen :: #force_inline proc(point: [3]f32) -> [2]i32 {
