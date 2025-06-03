@@ -83,7 +83,7 @@ is_inside_triangle :: #force_inline proc(point: [2]i32, tri: Tri_2D) -> bool {
     for i in 0..<3  {
         base := tri[i]
         side := tri[(i+1)%3] - base
-        if !is_right_of_line(point - base, side) {
+        if is_right_of_line(point - base, side) {
             return false
         }
     }
@@ -173,7 +173,7 @@ world_to_screen :: #force_inline proc(point: [3]f32) -> [2]i32 {
 
     p := point.xy * px_per_world_unit
     
-    return {i32(p.x) + WIDTH / 2, i32(p.y) + HEIGHT / 2}
+    return {i32(p.x) + WIDTH / 2, -i32(p.y) + HEIGHT / 2}
 }
 
 Box :: struct {
