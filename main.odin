@@ -122,7 +122,9 @@ main :: proc() {
     defer delete(new.faces)
     append(&g_models, new)
 
-    append(&g_entities, create_entity(0, {0, 0, 2}, 1, DEEP))
+    ent := create_entity(0, {0, 0, 2}, 1, DEEP)
+    ent.yaw = math.PI
+    append(&g_entities, ent)
 
     for !rl.WindowShouldClose() {
         mem.set(&g_target, 0, len(g_target) * size_of(g_target[0]))
@@ -142,7 +144,7 @@ main :: proc() {
         for &e, i in g_entities {
             s := f32(i+1)
             // e.pitch += 0.01 / s
-            e.yaw += 0.002 * s
+            e.yaw += 0.02 * s
         }
 
         free_all(context.temp_allocator)
