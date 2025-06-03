@@ -29,7 +29,6 @@ HEIGHT :: 600
 
 FOV :: 90
 
-Tri_2D :: [3][2]i32
 Tri_3D :: [3][3]f32
 
 Model :: struct {
@@ -63,7 +62,10 @@ create_entity :: proc(model: int, position: [3]f32, scale: f32, color: Color) ->
 }
 
 get_transform :: proc(e: Entity) -> matrix[4, 4]f32 {
-    rotation := linalg.matrix4_rotate(e.yaw, [3]f32{0,1,0}) * linalg.matrix4_rotate(e.pitch, [3]f32{1,0,0}) * linalg.matrix4_rotate(e.roll, [3]f32{0,0,1})
+    rotation := 
+        linalg.matrix4_rotate(e.yaw, [3]f32{0,1,0}) * 
+        linalg.matrix4_rotate(e.pitch, [3]f32{1,0,0}) * 
+        linalg.matrix4_rotate(e.roll, [3]f32{0,0,1})
 
     return linalg.matrix4_translate(e.position) * linalg.matrix4_scale(e.scale) * rotation
 }
@@ -80,21 +82,31 @@ translate_face :: #force_inline proc(face: Tri_3D, mtx: matrix[4, 4]f32) -> Tri_
     return t
 }
 
-is_inside_triangle :: #force_inline proc(point: [2]i32, tri: Tri_2D) -> bool {
-    for i in 0..<3  {
-        base := tri[i]
-        side := tri[(i+1)%3] - base
-        if is_right_of_line(point - base, side) {
-            return false
-        }
-    }
-    return true
+is_inside_triangle :: #force_inline proc(point, ta, tb, tc: [2]i32) -> (yes: bool, weights: [3]f32) {
+    areaABP := signed_tri_area(ta, tb, point)
+    areaBCP := signed_tri_area(tb, tc, point)
+    areaCAP := signed_tri_area(tc, ta, point)
+    
+    total_area := areaABP + areaBCP + areaCAP
+    if total_area <= 0 { return }
+    inv_area_sum := 1 / f32(total_area)
+    
+    weights[0] = f32(areaBCP) * inv_area_sum
+    weights[1] = f32(areaCAP) * inv_area_sum
+    weights[2] = f32(areaABP) * inv_area_sum
+
+    yes = areaABP >= 0 && areaBCP >= 0 && areaCAP >= 0
+
+    return
 }
 
-is_right_of_line :: #force_inline proc(point: [2]i32, line: [2]i32) -> bool {
-    perp := [2]i32{line.y, -line.x}
+perp :: #force_inline proc(point: [2]i32) -> [2]i32 {
+    return { point.y, -point.x }
+}
 
-    return linalg.dot(point, perp) > 0
+// TODO: the i32 might overflow?
+signed_tri_area :: #force_inline proc(a, b, c: [2]i32) -> i32 {
+    return linalg.dot(c - a, perp(b - a)) / 2
 }
 
 main :: proc() {
@@ -122,8 +134,9 @@ main :: proc() {
     defer delete(new.faces)
     append(&g_models, new)
 
-    ent := create_entity(0, {0, 0, 2}, 1, DEEP)
+    ent := create_entity(0, {0, 0, 3}, 1, DEEP)
     ent.yaw = math.PI
+    ent.roll = math.PI
     append(&g_entities, ent)
 
     for !rl.WindowShouldClose() {
@@ -143,7 +156,7 @@ main :: proc() {
 
         for &e, i in g_entities {
             s := f32(i+1)
-            // e.pitch += 0.01 / s
+            e.pitch += 0.01 / s
             e.yaw += 0.02 * s
         }
 
@@ -162,22 +175,30 @@ draw_entity :: proc(e: Entity) {
 }
 
 draw_triangle :: #force_inline  proc(tri: Tri_3D, color: rl.Color) #no_bounds_check {
-    projected_tri := Tri_2D{world_to_screen(tri[0]), world_to_screen(tri[1]), world_to_screen(tri[2])}
-    b_box := get_clipped_bounding_box(projected_tri)
-    for y := b_box.top; y < b_box.bottom; y += 1 {
-        for x := b_box.left; x < b_box.right; x += 1 {
+    a, b, c := world_to_screen(tri[0]), world_to_screen(tri[1]), world_to_screen(tri[2])
+
+    left    :=  clamp(min(a.x, b.x, c.x), 0, WIDTH)
+    right   :=  clamp(max(a.x, b.x, c.x), 0, WIDTH)
+    top     :=  clamp(min(a.y, b.y, c.y), 0, HEIGHT)
+    bottom  :=  clamp(max(a.y, b.y, c.y), 0, HEIGHT)
+    
+    for y := top; y < bottom; y += 1 {
+        for x := left; x < right; x += 1 {
             i := y*WIDTH + x
-            depth := get_depth(tri)
-            if is_inside_triangle({x, y}, projected_tri) && depth < g_depth_buffer[i] {
-                g_target[i] = color
+            yes, weights := is_inside_triangle({x, y}, a, b, c)
+            depth := linalg.dot(weights, [3]f32{tri[0].z, tri[1].z, tri[2].z})
+            if yes && depth < g_depth_buffer[i] {
+                if false {
+                    v := u8(depth/5*255)
+                    g_target[i] = rl.Color{v,v,v,255}
+                }
+                else {
+                    g_target[i] = color
+                }
                 g_depth_buffer[i] = depth
             }            
         }
     }
-}
-
-get_depth :: proc(tri: Tri_3D) -> f32 {
-    return (tri[0].z + tri[1].z + tri[2].z) / 3
 }
 
 world_to_screen :: #force_inline proc(point: [3]f32) -> [2]i32 {
@@ -186,7 +207,7 @@ world_to_screen :: #force_inline proc(point: [3]f32) -> [2]i32 {
 
     p := point.xy * px_per_world_unit
     
-    return {i32(p.x) + WIDTH / 2, -i32(p.y) + HEIGHT / 2}
+    return {i32(p.x) + WIDTH / 2, i32(p.y) + HEIGHT / 2}
 }
 
 Box :: struct {
@@ -194,15 +215,6 @@ Box :: struct {
     right: i32,
     top: i32,
     bottom: i32,
-}
-
-get_clipped_bounding_box :: #force_inline proc(tri: Tri_2D) -> Box {
-    return {
-        left    =   clamp(min(tri[0].x, tri[1].x, tri[2].x), 0, WIDTH),
-        right   =   clamp(max(tri[0].x, tri[1].x, tri[2].x), 0, WIDTH),
-        top     =   clamp(min(tri[0].y, tri[1].y, tri[2].y), 0, HEIGHT),
-        bottom  =   clamp(max(tri[0].y, tri[1].y, tri[2].y), 0, HEIGHT),
-    }
 }
 
 import_obj_file :: proc(name: string) -> Model {
@@ -253,5 +265,4 @@ import_obj_file :: proc(name: string) -> Model {
         }
     }
     return Model{tris[:]}
-    // return create_model(tris[:], position={2.5,2.5,.01}, scale=0.1, color=DEEP)
 }
