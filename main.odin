@@ -4,6 +4,7 @@ import "core:log"
 // import "core:math/rand"
 import "core:math/linalg"
 // import "core:math/ease"
+import "core:math"
 import "core:mem"
 import "core:os/os2"
 import "core:strings"
@@ -26,7 +27,7 @@ DEEP    :: Color {0.12, 0.15, 0.62, 1}
 WIDTH :: 800
 HEIGHT :: 600
 
-FOV :: 60
+FOV :: 90
 
 Tri_2D :: [3][2]f32
 Tri_3D :: [3][3]f32
@@ -126,7 +127,7 @@ main :: proc() {
     defer delete(new.faces)
     append(&g_models, new)
 
-    append(&g_entities, create_entity(0, {0, 0, .8}, .1, DEEP))
+    append(&g_entities, create_entity(0, {0, 0, 6}, 1, DEEP))
 
     for !rl.WindowShouldClose() {
         mem.set(&g_target, 0, len(g_target) * size_of(g_target[0]))
@@ -172,9 +173,10 @@ draw_triangle :: #force_inline  proc(tri: Tri_3D, color: rl.Color) #no_bounds_ch
     }
 }
 
-world_to_screen :: proc(point: [3]f32) -> [2]f32 {
-    depth := point.z
-    return {point.x/depth + .5, point.y/depth + .5}
+world_to_screen :: #force_inline proc(point: [3]f32) -> [2]f32 {
+    a := math.tan(math.to_radians_f32(FOV) / 2) * 2
+    depth := 1. / a / point.z
+    return point.xy * depth + .5
 }
 
 Box :: struct {
