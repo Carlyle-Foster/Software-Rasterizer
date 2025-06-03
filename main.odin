@@ -29,14 +29,8 @@ HEIGHT :: 600
 
 FOV :: 90
 
-Tri_2D :: [3][2]f32
+Tri_2D :: [3][2]i32
 Tri_3D :: [3][3]f32
-
-TriObject :: struct {
-    inner: Tri_3D,
-    color: Color,
-    mtx: matrix[4, 4]f32,
-}
 
 Model :: struct {
     faces: []Tri_3D,
@@ -85,7 +79,7 @@ translate_face :: #force_inline proc(face: Tri_3D, mtx: matrix[4, 4]f32) -> Tri_
     return t
 }
 
-is_inside_triangle :: #force_inline proc(point: [2]f32, tri: Tri_2D) -> bool {
+is_inside_triangle :: #force_inline proc(point: [2]i32, tri: Tri_2D) -> bool {
     for i in 0..<3  {
         base := tri[i]
         side := tri[(i+1)%3] - base
@@ -96,8 +90,8 @@ is_inside_triangle :: #force_inline proc(point: [2]f32, tri: Tri_2D) -> bool {
     return true
 }
 
-is_right_of_line :: #force_inline proc(point: [2]f32, line: [2]f32) -> bool {
-    perp := [2]f32{line.y, -line.x}
+is_right_of_line :: #force_inline proc(point: [2]i32, line: [2]i32) -> bool {
+    perp := [2]i32{line.y, -line.x}
 
     return linalg.dot(point, perp) > 0
 }
@@ -127,7 +121,7 @@ main :: proc() {
     defer delete(new.faces)
     append(&g_models, new)
 
-    append(&g_entities, create_entity(0, {0, 0, 6}, 1, DEEP))
+    append(&g_entities, create_entity(0, {0, 0, 5}, 1, DEEP))
 
     for !rl.WindowShouldClose() {
         mem.set(&g_target, 0, len(g_target) * size_of(g_target[0]))
@@ -164,34 +158,37 @@ draw_entity :: proc(e: Entity) {
 draw_triangle :: #force_inline  proc(tri: Tri_3D, color: rl.Color) #no_bounds_check {
     projected_tri := Tri_2D{world_to_screen(tri[0]), world_to_screen(tri[1]), world_to_screen(tri[2])}
     b_box := get_clipped_bounding_box(projected_tri)
-    for y := b_box.top; y < b_box.bottom; y += 1. / (HEIGHT + 1) {
-        for x := b_box.left; x < b_box.right; x += 1. / (WIDTH + 1) {
+    for y := b_box.top; y < b_box.bottom; y += 1 {
+        for x := b_box.left; x < b_box.right; x += 1 {
             if is_inside_triangle({x, y}, projected_tri) {
-                g_target[int(y*HEIGHT)*WIDTH + int(x*WIDTH)] = color
+                g_target[y*WIDTH + x] = color
             }            
         }
     }
 }
 
-world_to_screen :: #force_inline proc(point: [3]f32) -> [2]f32 {
-    a := math.tan(math.to_radians_f32(FOV) / 2) * 2
-    depth := 1. / a / point.z
-    return point.xy * depth + .5
+world_to_screen :: #force_inline proc(point: [3]f32) -> [2]i32 {
+    height_of_view := math.tan(math.to_radians_f32(FOV) / 2) * 2
+    px_per_world_unit := HEIGHT / height_of_view / point.z
+
+    p := point.xy * px_per_world_unit
+    
+    return {i32(p.x) + WIDTH / 2, i32(p.y) + HEIGHT / 2}
 }
 
 Box :: struct {
-    left: f32,
-    right: f32,
-    top: f32,
-    bottom: f32,
+    left: i32,
+    right: i32,
+    top: i32,
+    bottom: i32,
 }
 
 get_clipped_bounding_box :: #force_inline proc(tri: Tri_2D) -> Box {
     return {
-        left    =   clamp(min(tri[0].x, tri[1].x, tri[2].x), 0,1),
-        right   =   clamp(max(tri[0].x, tri[1].x, tri[2].x), 0,1),
-        top     =   clamp(min(tri[0].y, tri[1].y, tri[2].y), 0,1),
-        bottom  =   clamp(max(tri[0].y, tri[1].y, tri[2].y), 0,1),
+        left    =   clamp(min(tri[0].x, tri[1].x, tri[2].x), 0, WIDTH),
+        right   =   clamp(max(tri[0].x, tri[1].x, tri[2].x), 0, WIDTH),
+        top     =   clamp(min(tri[0].y, tri[1].y, tri[2].y), 0, HEIGHT),
+        bottom  =   clamp(max(tri[0].y, tri[1].y, tri[2].y), 0, HEIGHT),
     }
 }
 
