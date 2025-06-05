@@ -1,6 +1,7 @@
 package rasterizer
 
 import "core:log"
+import "core:fmt"
 import "core:mem"
 import "core:math"
 import "core:math/linalg"
@@ -117,6 +118,21 @@ signed_tri_area :: #force_inline proc(a, b, c: [2]i32) -> i32 {
 }
 
 main :: proc() {
+    when ODIN_DEBUG {
+		track: mem.Tracking_Allocator
+		mem.tracking_allocator_init(&track, context.allocator)
+		context.allocator = mem.tracking_allocator(&track)
+
+		defer {
+			if len(track.allocation_map) > 0 {
+				fmt.eprintf("=== %v allocations not freed: ===\n", len(track.allocation_map))
+				for _, entry in track.allocation_map {
+					fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
+				}
+			}
+			mem.tracking_allocator_destroy(&track)
+		}
+	}
     context.logger = log.create_console_logger(opt=log.Options{
         .Level,
         .Terminal_Color,
@@ -124,6 +140,9 @@ main :: proc() {
         .Line,
     })
     defer log.destroy_console_logger(context.logger)
+    
+    defer delete(g_models)
+    defer delete(g_entities)
 
     rl.SetTargetFPS(60)
     rl.InitWindow(WIDTH, HEIGHT, "SoftWare Rasterizer 0.97")
