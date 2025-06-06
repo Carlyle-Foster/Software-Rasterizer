@@ -3,8 +3,11 @@ package rasterizer
 import "core:log"
 import "core:fmt"
 import "core:mem"
+import "core:time"
 import "core:math"
 import "core:math/linalg"
+import "core:thread"
+import "core:sync"
 
 import sdl "vendor:sdl3"
 import gl "vendor:OpenGL"
@@ -16,6 +19,20 @@ vertex_source   ::  #load("./Shaders/default.vert", string)
 fragment_source ::  #load("./Shaders/default.frag", string)
 
 Color :: [4]f32
+
+Partial :: struct {
+    offset: int,
+    thread: ^thread.Thread,
+    target: [WIDTH*HEIGHT][4]u8,
+    depth_buffer: [WIDTH*HEIGHT]f32,
+}
+g_partials: [6]^Partial
+
+g_draw_condition: sync.Cond
+g_draw_mutex: sync.Mutex
+g_draw_group: sync.Wait_Group
+
+g_go_render := false // Protected by `g_draw_mutex`
 
 BLACK   :: Color {0,0,0,1}
 WHITE   :: Color {1,1,1,1}
@@ -84,9 +101,6 @@ get_transform :: proc(e: Entity) -> matrix[4, 4]f32 {
 
     return linalg.matrix4_translate(e.position) * linalg.matrix4_scale(e.scale) * rotation
 }
-
-g_target: [WIDTH*HEIGHT][4]u8
-g_depth_buffer: [WIDTH*HEIGHT]f32
 
 translate_face :: #force_inline proc(face: [3][3]f32, mtx: matrix[4, 4]f32) -> [3][3]f32 {
     t := [3][3]f32 {
@@ -233,17 +247,42 @@ main :: proc() {
 
     // OpenGL is basically setup now
 
-    new, import_ok := import_obj_file("suzanne.obj")
+    model, import_ok := import_obj_file("suzanne.obj")
     assert(import_ok)
-    defer delete(new.faces)
-    append(&g_models, new)
+    defer delete(model.faces)
+    append(&g_models, model)
 
     ent := create_entity(0, {0, 0, 3}, 1, DEEP)
     ent.yaw = math.PI
     ent.roll = math.PI
     append(&g_entities, ent)
 
+    for &p, i in g_partials {
+        p = new(Partial)
+        p.offset = i
+        p.thread = thread.create_and_start_with_data(p, draw_entities)
+    }
+    defer {
+        for p in g_partials {
+            thread.terminate(p.thread, 0)
+            thread.destroy(p.thread)
+            free(p)
+        }
+    }
+
+    last_frame := time.tick_now()
+
+    gl.Enable(gl.BLEND)
+    gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+
+    selected_partial := 0
     loop: for {
+		duration := time.tick_since(last_frame)
+		t := time.duration_milliseconds(duration)
+        // log.info("frame lasted", t, "millis")
+        last_frame = time.tick_now()
+        _ = t
+
         event: sdl.Event
         for sdl.PollEvent(&event) {
             #partial switch event.type {
@@ -253,6 +292,8 @@ main :: proc() {
                 case sdl.K_D: g_view_mode = .Depth
                 case sdl.K_N: g_view_mode = .Normals
                 case sdl.K_F: g_view_mode = .Faces
+
+                case sdl.K_1..=sdl.K_6: selected_partial = int(event.key.key - sdl.K_1)
                 
                 case sdl.K_ESCAPE:
                     break loop
@@ -261,19 +302,24 @@ main :: proc() {
                 break loop
             }
         }
-        for &px in g_target {
-            px = [4]u8{128, 230, 230, 255}
+        sync.wait_group_add(&g_draw_group, len(g_partials))
+        //TODO: are these guards really necessary?
+        if sync.mutex_guard(&g_draw_mutex) {
+            g_go_render = true
         }
-        for &d in g_depth_buffer {
-            d = math.INF_F32
+        sync.cond_broadcast(&g_draw_condition)
+        sync.wait_group_wait(&g_draw_group)
+        if sync.mutex_guard(&g_draw_mutex) {
+            g_go_render = false
         }
-        for e in g_entities {
-            draw_entity(e)
-        }
-        gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, WIDTH, HEIGHT, 0, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(g_target[:]))
+
+        gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, WIDTH, HEIGHT, 0, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(g_partials[selected_partial].target[:]))
         gl.Uniform1i(uniforms["u_texture"].location, 0)
 
         gl.Viewport(0, 0, WIDTH, HEIGHT)
+
+        gl.ClearColor(.5, .9, .9, 1)
+        gl.Clear(gl.COLOR_BUFFER_BIT)
 
         gl.BindVertexArray(vao)
         gl.BindTexture(gl.TEXTURE_2D, tex)
@@ -289,18 +335,39 @@ main :: proc() {
         free_all(context.temp_allocator)
     }
 }
-
-draw_entity :: proc(e: Entity) {
-    mtx := get_transform(e)
-    faces := &g_models[e.model].faces
-    for face, i in faces {
-        c := transmute([4]u8)(u32((f32(i) / f32(len(faces))) * 16_000_000))
-        color := [4]u8{c.r, c.g, c.b, 255}
-        draw_triangle(face, mtx, color)
+// 128, 230, 230, 255
+draw_entities :: proc(partial: rawptr) {
+    p := (^Partial)(partial)
+    for {
+        wait: for {
+            if sync.mutex_guard(&g_draw_mutex) {
+                sync.cond_wait(&g_draw_condition, &g_draw_mutex)
+                if g_go_render { break }
+            }
+        }
+        for &px in p.target {
+            px = {}
+        }
+        for &px in p.depth_buffer {
+            px = math.INF_F32
+        }
+        for e in g_entities {
+            mtx := get_transform(e)
+            faces := g_models[e.model].faces
+            num_faces := len(faces)
+            stride := len(g_partials)
+            for i := p.offset; i < num_faces; i += stride {
+                face := faces[i]
+                c := transmute([4]u8)(u32((f32(i) / f32(num_faces)) * 16_000_000))
+                color := [4]u8{c.r, c.g, c.b, 255}
+                draw_triangle(face, mtx, color, p)
+            }
+        }
+        sync.wait_group_done(&g_draw_group)
     }
 }
 
-draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, color: [4]u8) #no_bounds_check {
+draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, color: [4]u8, p: ^Partial) #no_bounds_check {
     t := translate_face(tri.vertices, transform)
     a, b, c := world_to_screen(t[0]), world_to_screen(t[1]), world_to_screen(t[2])
 
@@ -319,20 +386,20 @@ draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, col
             i := y*WIDTH + x
             yes, weights := is_inside_triangle({x, y}, a, b, c)
             depth := linalg.dot(weights, [3]f32{t[0].z, t[1].z, t[2].z})
-            if yes && depth < g_depth_buffer[i] {
-                g_depth_buffer[i] = depth
+            if yes && depth < p.depth_buffer[i] {
+                p.depth_buffer[i] = depth
 
                 switch g_view_mode {
                 case .Standard:
                     unimplemented()
                 case .Depth:
                     v := u8(depth/5*255)
-                    g_target[i] = [4]u8{v,v,v,255}
+                    p.target[i] = [4]u8{v,v,v,255}
                 case .Normals:
                     normal := tri.normals[0] / 2 + {.5, .5, .5}
-                    g_target[i] = [4]u8{u8(normal.x*255), u8(normal.y*255), u8(normal.z*255), 255}
+                    p.target[i] = [4]u8{u8(normal.x*255), u8(normal.y*255), u8(normal.z*255), 255}
                 case .Faces:
-                    g_target[i] = color
+                    p.target[i] = color
                 }
             }            
         }
