@@ -6,7 +6,14 @@ import "core:mem"
 import "core:math"
 import "core:math/linalg"
 
-import rl "vendor:raylib"
+import sdl "vendor:sdl3"
+import gl "vendor:OpenGL"
+
+GL_VERSION_MAJOR :: 3
+GL_VERSION_MINOR :: 3
+
+vertex_source   ::  #load("./Shaders/default.vert", string)
+fragment_source ::  #load("./Shaders/default.frag", string)
 
 Color :: [4]f32
 
@@ -78,7 +85,7 @@ get_transform :: proc(e: Entity) -> matrix[4, 4]f32 {
     return linalg.matrix4_translate(e.position) * linalg.matrix4_scale(e.scale) * rotation
 }
 
-g_target: [WIDTH*HEIGHT]rl.Color
+g_target: [WIDTH*HEIGHT][4]u8
 g_depth_buffer: [WIDTH*HEIGHT]f32
 
 translate_face :: #force_inline proc(face: [3][3]f32, mtx: matrix[4, 4]f32) -> [3][3]f32 {
@@ -119,20 +126,20 @@ signed_tri_area :: #force_inline proc(a, b, c: [2]i32) -> i32 {
 
 main :: proc() {
     when ODIN_DEBUG {
-		track: mem.Tracking_Allocator
-		mem.tracking_allocator_init(&track, context.allocator)
-		context.allocator = mem.tracking_allocator(&track)
+        track: mem.Tracking_Allocator
+        mem.tracking_allocator_init(&track, context.allocator)
+        context.allocator = mem.tracking_allocator(&track)
 
-		defer {
-			if len(track.allocation_map) > 0 {
-				fmt.eprintf("=== %v allocations not freed: ===\n", len(track.allocation_map))
-				for _, entry in track.allocation_map {
-					fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
-				}
-			}
-			mem.tracking_allocator_destroy(&track)
-		}
-	}
+        defer {
+            if len(track.allocation_map) > 0 {
+                fmt.eprintf("=== %v allocations not freed: ===\n", len(track.allocation_map))
+                for _, entry in track.allocation_map {
+                    fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
+                }
+            }
+            mem.tracking_allocator_destroy(&track)
+        }
+    }
     context.logger = log.create_console_logger(opt=log.Options{
         .Level,
         .Terminal_Color,
@@ -144,17 +151,87 @@ main :: proc() {
     defer delete(g_models)
     defer delete(g_entities)
 
-    rl.SetTargetFPS(60)
-    rl.InitWindow(WIDTH, HEIGHT, "SoftWare Rasterizer 0.97")
+    init_ok := sdl.Init({.VIDEO})
+    assert(init_ok)
+    defer sdl.Quit()
 
-    image := rl.Image{
-        data = &g_target,
-        width = WIDTH,
-        height = HEIGHT,
-        mipmaps = 1,
-        format = .UNCOMPRESSED_R8G8B8A8,
+    window := sdl.CreateWindow("SoftWare Rasterizer 0.97", WIDTH, HEIGHT, {.OPENGL})
+    assert(window != nil)
+    defer sdl.DestroyWindow(window)
+
+    // Initializing OpenGL
+
+    sdl.GL_SetAttribute(.CONTEXT_PROFILE_MASK,  i32(sdl.GLProfile.CORE))
+    sdl.GL_SetAttribute(.CONTEXT_MAJOR_VERSION, GL_VERSION_MAJOR)
+    sdl.GL_SetAttribute(.CONTEXT_MINOR_VERSION, GL_VERSION_MINOR)
+
+    gl_context := sdl.GL_CreateContext(window)
+    defer sdl.GL_DestroyContext(gl_context)
+
+    //TODO: this doesn't seem to be working??
+    vsync_ok := sdl.GL_SetSwapInterval(1)
+    assert(vsync_ok)
+
+    gl.load_up_to(GL_VERSION_MAJOR, GL_VERSION_MINOR, sdl.gl_set_proc_address)
+
+    // Compiling & loading shaders
+
+    program, program_ok := gl.load_shaders_source(vertex_source, fragment_source)
+    assert(program_ok)
+    defer gl.DeleteProgram(program)
+
+    gl.UseProgram(program)
+
+    uniforms := gl.get_uniforms_from_program(program)
+    defer gl.destroy_uniforms(uniforms)
+
+    // Creating Handles to refer to the things we'll pass to OpenGL 
+    vao: u32
+    gl.GenVertexArrays(1, &vao)
+    defer gl.DeleteVertexArrays(1, &vao)
+
+    gl.BindVertexArray(vao)
+
+    vbo, ebo: u32
+    gl.GenBuffers(1, &vbo)
+    gl.GenBuffers(1, &ebo)
+    defer gl.DeleteBuffers(1, &vbo)
+    defer gl.DeleteBuffers(1, &ebo)
+
+    Vertex :: struct {
+        pos: [2]f32,
+        tex_coord: [2]f32,
     }
-    texture := rl.LoadTextureFromImage(image)
+
+    vertices := []Vertex {
+        {{-1, +1}, {0, 1}},
+        {{-1, -1}, {1, 1}},
+        {{+1, -1}, {1, 0}},
+        {{+1, +1}, {0, 0}},
+    }
+    indices := []u8 {
+        0, 1, 2,
+        2, 3, 0,
+    }
+    gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
+    gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*size_of(vertices[0]), raw_data(vertices), gl.STATIC_DRAW)
+    //TODO: wtf is this     v
+	gl.EnableVertexAttribArray(0)
+	gl.EnableVertexAttribArray(1)
+    gl.VertexAttribPointer(0, 2, gl.FLOAT, false, size_of(vertices[0]), offset_of(Vertex, pos))
+    gl.VertexAttribPointer(1, 2, gl.FLOAT, false, size_of(vertices[0]), offset_of(Vertex, tex_coord))
+
+    gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo)
+    gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(indices)*size_of(indices[0]), raw_data(indices), gl.STATIC_DRAW)
+
+    tex: u32
+    gl.GenTextures(1, &tex)
+    gl.ActiveTexture(gl.TEXTURE0)
+    gl.BindTexture(gl.TEXTURE_2D, tex)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+
+    // OpenGL is basically setup now
 
     new, import_ok := import_obj_file("suzanne.obj")
     assert(import_ok)
@@ -166,31 +243,48 @@ main :: proc() {
     ent.roll = math.PI
     append(&g_entities, ent)
 
-    for !rl.WindowShouldClose() {
-        mem.set(&g_target, 0, len(g_target) * size_of(g_target[0]))
+    loop: for {
+        event: sdl.Event
+        for sdl.PollEvent(&event) {
+            #partial switch event.type {
+            case .KEY_DOWN:
+                switch event.key.key {
+                case sdl.K_S: g_view_mode = .Standard
+                case sdl.K_D: g_view_mode = .Depth
+                case sdl.K_N: g_view_mode = .Normals
+                case sdl.K_F: g_view_mode = .Faces
+                
+                case sdl.K_ESCAPE:
+                    break loop
+                }
+            case .QUIT:
+                break loop
+            }
+        }
+        for &px in g_target {
+            px = [4]u8{128, 230, 230, 255}
+        }
         for &d in g_depth_buffer {
             d = math.INF_F32
         }
         for e in g_entities {
             draw_entity(e)
         }
-        rl.UpdateTexture(texture, &g_target)
+        gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, WIDTH, HEIGHT, 0, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(g_target[:]))
+        gl.Uniform1i(uniforms["u_texture"].location, 0)
 
-        rl.BeginDrawing()
-        rl.ClearBackground(rl.Color{126, 225, 225, 255})
-        rl.DrawTexture(texture, 0, 0, rl.WHITE)
-        rl.EndDrawing()
+        gl.Viewport(0, 0, WIDTH, HEIGHT)
+
+        gl.BindVertexArray(vao)
+        gl.BindTexture(gl.TEXTURE_2D, tex)
+        gl.DrawElements(gl.TRIANGLES, i32(len(indices)), gl.UNSIGNED_BYTE, nil)
 
         for &e, i in g_entities {
             s := f32(i+1)
             e.pitch += 0.01 / s
             e.yaw += 0.02 * s
         }
-
-        if rl.IsKeyPressed(.S) { g_view_mode = .Standard    }
-        if rl.IsKeyPressed(.D) { g_view_mode = .Depth       }
-        if rl.IsKeyPressed(.N) { g_view_mode = .Normals     }
-        if rl.IsKeyPressed(.F) { g_view_mode = .Faces       }
+        sdl.GL_SwapWindow(window)
 
         free_all(context.temp_allocator)
     }
@@ -201,12 +295,12 @@ draw_entity :: proc(e: Entity) {
     faces := &g_models[e.model].faces
     for face, i in faces {
         c := transmute([4]u8)(u32((f32(i) / f32(len(faces))) * 16_000_000))
-        color := rl.Color{c.r, c.g, c.b, 255}
+        color := [4]u8{c.r, c.g, c.b, 255}
         draw_triangle(face, mtx, color)
     }
 }
 
-draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, color: rl.Color) #no_bounds_check {
+draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, color: [4]u8) #no_bounds_check {
     t := translate_face(tri.vertices, transform)
     a, b, c := world_to_screen(t[0]), world_to_screen(t[1]), world_to_screen(t[2])
 
@@ -233,10 +327,10 @@ draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, col
                     unimplemented()
                 case .Depth:
                     v := u8(depth/5*255)
-                    g_target[i] = rl.Color{v,v,v,255}
+                    g_target[i] = [4]u8{v,v,v,255}
                 case .Normals:
                     normal := tri.normals[0] / 2 + {.5, .5, .5}
-                    g_target[i] = rl.Color{u8(normal.x*255), u8(normal.y*255), u8(normal.z*255), 255}
+                    g_target[i] = [4]u8{u8(normal.x*255), u8(normal.y*255), u8(normal.z*255), 255}
                 case .Faces:
                     g_target[i] = color
                 }
