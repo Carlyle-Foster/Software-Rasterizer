@@ -169,24 +169,30 @@ main :: proc() {
     assert(init_ok)
     defer sdl.Quit()
 
-    window := sdl.CreateWindow("SoftWare Rasterizer 0.97", WIDTH, HEIGHT, {.OPENGL})
-    assert(window != nil)
-    defer sdl.DestroyWindow(window)
-
     // Initializing OpenGL
 
     sdl.GL_SetAttribute(.CONTEXT_PROFILE_MASK,  i32(sdl.GLProfile.CORE))
     sdl.GL_SetAttribute(.CONTEXT_MAJOR_VERSION, GL_VERSION_MAJOR)
     sdl.GL_SetAttribute(.CONTEXT_MINOR_VERSION, GL_VERSION_MINOR)
 
+    depth_buffer_ok := sdl.GL_SetAttribute(.DEPTH_SIZE, 24)
+    assert(depth_buffer_ok)
+
+    window := sdl.CreateWindow("SoftWare Rasterizer 0.97", WIDTH, HEIGHT, {.OPENGL})
+    if window == nil {
+        log.panic("SDL3: failed to create window because of Error:", sdl.GetError())
+    }
+    defer sdl.DestroyWindow(window)
+
     gl_context := sdl.GL_CreateContext(window)
     defer sdl.GL_DestroyContext(gl_context)
 
-    //TODO: this doesn't seem to be working??
+    gl.load_up_to(GL_VERSION_MAJOR, GL_VERSION_MINOR, sdl.gl_set_proc_address)
+
+    // Enabling vsync
     vsync_ok := sdl.GL_SetSwapInterval(1)
     assert(vsync_ok)
 
-    gl.load_up_to(GL_VERSION_MAJOR, GL_VERSION_MINOR, sdl.gl_set_proc_address)
 
     // Compiling & loading shaders
 
@@ -244,6 +250,13 @@ main :: proc() {
     gl.BindTexture(gl.TEXTURE_2D, tex)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    
+    depth_buf: u32
+    gl.GenTextures(1, &depth_buf)
+    gl.ActiveTexture(gl.TEXTURE1)
+    gl.BindTexture(gl.TEXTURE_2D, depth_buf)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
     // OpenGL is basically setup now
 
@@ -274,8 +287,10 @@ main :: proc() {
 
     gl.Enable(gl.BLEND)
     gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+    gl.Enable(gl.DEPTH_TEST)
+    gl.DepthFunc(gl.LESS)
 
-    selected_partial := 0
+    selected_partial := -1
     loop: for {
 		duration := time.tick_since(last_frame)
 		t := time.duration_milliseconds(duration)
@@ -294,6 +309,7 @@ main :: proc() {
                 case sdl.K_F: g_view_mode = .Faces
 
                 case sdl.K_1..=sdl.K_6: selected_partial = int(event.key.key - sdl.K_1)
+                case sdl.K_0: selected_partial = -1
                 
                 case sdl.K_ESCAPE:
                     break loop
@@ -313,17 +329,31 @@ main :: proc() {
             g_go_render = false
         }
 
-        gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, WIDTH, HEIGHT, 0, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(g_partials[selected_partial].target[:]))
-        gl.Uniform1i(uniforms["u_texture"].location, 0)
-
         gl.Viewport(0, 0, WIDTH, HEIGHT)
 
         gl.ClearColor(.5, .9, .9, 1)
-        gl.Clear(gl.COLOR_BUFFER_BIT)
+        gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
         gl.BindVertexArray(vao)
-        gl.BindTexture(gl.TEXTURE_2D, tex)
-        gl.DrawElements(gl.TRIANGLES, i32(len(indices)), gl.UNSIGNED_BYTE, nil)
+
+        u_texture   := uniforms["u_texture"]
+        u_depth_buf := uniforms["u_depth_buf"]
+
+        for p, i in g_partials {
+            if selected_partial > -1 && selected_partial != i { continue }
+
+            gl.ActiveTexture(gl.TEXTURE0)
+            gl.BindTexture(gl.TEXTURE_2D, tex)
+            gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, WIDTH, HEIGHT, 0, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(p.target[:]))
+            gl.Uniform1i(u_texture.location, 0)
+
+            gl.ActiveTexture(gl.TEXTURE1)
+            gl.BindTexture(gl.TEXTURE_2D, depth_buf)
+            gl.TexImage2D(gl.TEXTURE_2D, 0, gl.R16F, WIDTH, HEIGHT, 0, gl.RED, gl.FLOAT, raw_data(p.depth_buffer[:]))
+            gl.Uniform1i(u_depth_buf.location, 1)
+    
+            gl.DrawElements(gl.TRIANGLES, i32(len(indices)), gl.UNSIGNED_BYTE, nil)
+        }
 
         for &e, i in g_entities {
             s := f32(i+1)
@@ -349,7 +379,7 @@ draw_entities :: proc(partial: rawptr) {
             px = {}
         }
         for &px in p.depth_buffer {
-            px = math.INF_F32
+            px = 1.
         }
         for e in g_entities {
             mtx := get_transform(e)
@@ -386,6 +416,9 @@ draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, col
             i := y*WIDTH + x
             yes, weights := is_inside_triangle({x, y}, a, b, c)
             depth := linalg.dot(weights, [3]f32{t[0].z, t[1].z, t[2].z})
+            MAX_DEPTH :: 10_000
+            depth = depth * (1. / MAX_DEPTH)
+            depth = clamp(depth, 0, 1)
             if yes && depth < p.depth_buffer[i] {
                 p.depth_buffer[i] = depth
 
@@ -393,7 +426,8 @@ draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, col
                 case .Standard:
                     unimplemented()
                 case .Depth:
-                    v := u8(depth/5*255)
+                    //TODO: this is kinda stupid
+                    v := u8(depth*MAX_DEPTH/5*255)
                     p.target[i] = [4]u8{v,v,v,255}
                 case .Normals:
                     normal := tri.normals[0] / 2 + {.5, .5, .5}
