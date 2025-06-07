@@ -1,2 +1,5 @@
 ols.json
 rasterizer
+*.so
+*.dll
+*.dylib

@@ -7,6 +7,10 @@ import "core:math"
 import "core:math/linalg"
 import "core:thread"
 import "core:sync"
+import "core:image"
+import "core:image/png"
+import "core:dynlib"
+import "core:os/os2"
 
 import rl "vendor:raylib"
 
@@ -14,25 +18,44 @@ import rl "vendor:raylib"
 WIDTH :: 800
 HEIGHT :: 600
 
-FOV :: 90
+FOV :: 40
 
 Color :: [4]f32
 
+Image :: image.Image
 Thread :: thread.Thread
+
+ShaderName :: string
 
 g_threads: [6]^Thread
 
 g_selected_thread := -1
 
 g_draw_condition: sync.Cond
-g_draw_mutex: sync.Mutex
+g_frame_count_mutex: sync.Mutex
+g_shader_mutex: sync.Mutex
 g_draw_group: sync.Wait_Group
 g_barrier: sync.Barrier
 
-g_go_render := false // Protected by `g_draw_mutex`
+g_frame_count := 0 // Protected by `g_frame_count_mutex`
 
 g_target:           [WIDTH*HEIGHT]Pixel
 g_packed_target:    [WIDTH*HEIGHT][4]u8
+
+ShaderInput :: struct {
+    normal: [3]f32,
+    tex_coord: [2]f32,
+    depth: f32,
+    texture: ^Image,
+}
+FragShader :: #type proc(using SI: ShaderInput) -> (color: [4]f32)
+
+Symbols :: struct {
+    shaders: ^map[ShaderName]FragShader,
+
+    __handle: dynlib.Library,
+}
+g_shared: Symbols
 
 Pixel :: struct {
     color: [4]u8,
@@ -46,7 +69,7 @@ ViewMode :: enum {
     Faces,
 }
 
-g_view_mode := ViewMode.Faces
+g_view_mode := ViewMode.Standard
 
 Tri_3D :: struct {
     vertices:   [3][3]f32,
@@ -67,11 +90,12 @@ Entity :: struct {
     yaw: f32,
     pitch: f32,
     roll: f32,
+    shader: ShaderName,
 }
 
 g_entities: [dynamic]Entity
 
-create_entity :: proc(model: int, position: [3]f32, scale: f32) -> Entity {
+create_entity :: proc(model: int, position: [3]f32, scale: f32, shader: ShaderName) -> Entity {
     return {
         model=model,
         position=position,
@@ -79,16 +103,19 @@ create_entity :: proc(model: int, position: [3]f32, scale: f32) -> Entity {
         yaw=0,
         pitch=0,
         roll=0,
+        shader=shader,
     }
 }
 
-get_transform :: proc(e: Entity) -> matrix[4, 4]f32 {
-    rotation := 
-        linalg.matrix4_rotate(e.yaw, [3]f32{0,1,0}) * 
-        linalg.matrix4_rotate(e.pitch, [3]f32{1,0,0}) * 
-        linalg.matrix4_rotate(e.roll, [3]f32{0,0,1})
+get_transform_and_rotation :: proc(e: Entity) -> (transform: matrix[4, 4]f32, rotation: matrix[3, 3]f32) {
+    rotation = 
+        linalg.matrix3_rotate(e.yaw, [3]f32{0,1,0}) * 
+        linalg.matrix3_rotate(e.pitch, [3]f32{1,0,0}) * 
+        linalg.matrix3_rotate(e.roll, [3]f32{0,0,1})
 
-    return linalg.matrix4_translate(e.position) * linalg.matrix4_scale(e.scale) * rotation
+    transform = linalg.matrix4_translate(e.position) * linalg.matrix4_scale(e.scale) * (matrix[4, 4]f32)(rotation)
+
+    return
 }
 
 translate_face :: #force_inline proc(face: [3][3]f32, mtx: matrix[4, 4]f32) -> [3][3]f32 {
@@ -127,6 +154,22 @@ signed_tri_area :: #force_inline proc(a, b, c: [2]i32) -> i32 {
     return linalg.dot(c - a, perp(b - a)) / 2
 }
 
+g_texture: ^Image
+
+sample_texture :: #force_inline proc(tex: ^Image, tex_coord: [2]f32) -> [4]f32 {
+    tc := tex_coord
+    tc.y = 1. - tc.y
+    coord := tc - math.F32_EPSILON // Ensures it's not exactly 1
+    x := int(max(coord.x, 0) * f32(tex.width))
+    y := int(max(coord.y, 0) * f32(tex.height))
+
+    buf := cast([^][4]u8)(raw_data(tex.pixels.buf[:]))
+
+    c := buf[y*tex.width + x]
+
+    return linalg.vector4_srgb_to_linear([4]f32{f32(c.r)/255, f32(c.g)/255, f32(c.b)/255, f32(c.a)/255})
+}
+
 main :: proc() {
     when ODIN_DEBUG {
         track: mem.Tracking_Allocator
@@ -154,15 +197,23 @@ main :: proc() {
     defer delete(g_models)
     defer delete(g_entities)
 
+    hot_reload_shaders()
+    defer dynlib.unload_library(g_shared.__handle)
+
     model, import_ok := import_obj_file("suzanne.obj")
     assert(import_ok)
     defer delete(model.faces)
     append(&g_models, model)
 
-    ent := create_entity(0, {0, 0, 3}, 1)
+    ent := create_entity(0, {0, 0, 7}, 1, "default")
     ent.yaw = math.PI
     ent.roll = math.PI
     append(&g_entities, ent)
+
+    texture_load_err: image.Error
+    g_texture, texture_load_err = png.load_from_file("drawn.png")
+    assert(texture_load_err == nil)
+    defer png.destroy(g_texture)
 
     for &t, i in g_threads {
         t = thread.create_and_start_with_data(rawptr(uintptr(i)), draw_entities)
@@ -196,6 +247,9 @@ main :: proc() {
             case .F: g_view_mode = .Faces
 
             case .ZERO..=.SIX: g_selected_thread = int(key - .ONE)
+
+            case .R: thread.run(hot_reload_shaders)
+
             }
         }
         for &px in g_target {
@@ -206,14 +260,12 @@ main :: proc() {
         }
         sync.wait_group_add(&g_draw_group, len(g_threads))
         sync.barrier_init(&g_barrier, len(g_threads))
-        // These guards are in case of a spurious wakeup
-        if sync.mutex_guard(&g_draw_mutex) {
-            g_go_render = true
-        }
-        sync.cond_broadcast(&g_draw_condition)
-        sync.wait_group_wait(&g_draw_group)
-        if sync.mutex_guard(&g_draw_mutex) {
-            g_go_render = false
+        if sync.mutex_guard(&g_shader_mutex) {
+            if sync.mutex_guard(&g_frame_count_mutex) {
+                g_frame_count += 1
+            }
+            sync.cond_broadcast(&g_draw_condition)
+            sync.wait_group_wait(&g_draw_group)
         }
         rl.UpdateTexture(rl_texture, rl_image.data)
 
@@ -232,18 +284,25 @@ main :: proc() {
 
 draw_entities :: proc(offset: rawptr) {
     offset := int(uintptr(offset))
+    last_frame: int
+    if sync.mutex_guard(&g_frame_count_mutex) {
+        last_frame = g_frame_count
+    }
     for {
         wait: for {
-            if sync.mutex_guard(&g_draw_mutex) {
-                sync.cond_wait(&g_draw_condition, &g_draw_mutex)
+            if sync.mutex_guard(&g_frame_count_mutex) {
+                if g_frame_count != last_frame {
+                    last_frame = g_frame_count
+                    break
+                }
 
-                // This check detects spurious wakeups
-                if g_go_render { break }
+                sync.cond_wait(&g_draw_condition, &g_frame_count_mutex)
             }
         }
         if g_selected_thread == -1 || g_selected_thread == offset {
             for e in g_entities {
-                mtx := get_transform(e)
+                transform, rotation := get_transform_and_rotation(e)
+                shader := g_shared.shaders[e.shader] or_else g_shared.shaders["error"]
                 faces := g_models[e.model].faces
                 num_faces := len(faces)
                 stride := len(g_threads)
@@ -252,8 +311,9 @@ draw_entities :: proc(offset: rawptr) {
                 for i := offset; i < num_faces; i += stride {
                     face := faces[i]
                     c := transmute([4]u8)(u32((f32(i) / f32(num_faces)) * 16_000_000))
-                    color := [4]u8{c.r, c.g, c.b, 255}
-                    draw_triangle(face, mtx, color)
+                    debug_color := [4]u8{c.r, c.g, c.b, 255}
+
+                    draw_triangle(face, transform, rotation, shader, debug_color)
                 }
             }
         }        
@@ -277,7 +337,13 @@ draw_entities :: proc(offset: rawptr) {
 }
 
 // This is thread-safe!
-draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, color: [4]u8) #no_bounds_check {
+draw_triangle :: #force_inline proc(
+    tri: Tri_3D,
+    transform: matrix[4,4]f32,
+    rotation: matrix[3, 3]f32,
+    shader: FragShader,
+    debug_color: [4]u8,
+) #no_bounds_check {
     t := translate_face(tri.vertices, transform)
     a, b, c := world_to_screen(t[0]), world_to_screen(t[1]), world_to_screen(t[2])
 
@@ -295,22 +361,37 @@ draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, col
         for x := left; x < right; x += 1 {
             i := y*WIDTH + x
             yes, weights := is_inside_triangle({x, y}, a, b, c)
+            //TODO: this probably is wrong but i won't be certain 'till i see the artifacts
             depth := linalg.dot(weights, [3]f32{t[0].z, t[1].z, t[2].z})
             opx := g_target[i]
             if yes && depth < opx.depth {
-                npx := Pixel{depth=depth}
+                npx := Pixel{color={255, 0, 255, 255}, depth=depth}
+                
+                normal := 
+                    tri.normals[0] * weights[0] + 
+                    tri.normals[1] * weights[1] + 
+                    tri.normals[2] * weights[2]
+                tex_coord := 
+                    tri.tex_coords[0] * weights[0] + 
+                    tri.tex_coords[1] * weights[1] + 
+                    tri.tex_coords[2] * weights[2]
 
                 switch g_view_mode {
                 case .Standard:
-                    unimplemented()
+                    normal = normal * linalg.transpose(rotation)
+
+                    rgba := shader({normal, tex_coord, depth, g_texture})
+
+                    rgba = linalg.vector4_linear_to_srgb(rgba)
+                    npx.color.rgb = {u8(rgba.r*255), u8(rgba.g*255), u8(rgba.b*255)}
                 case .Depth:
                     v := u8(depth/5*255)
-                    npx.color = {v,v,v,255}
+                    npx.color.rgb = v
                 case .Normals:
-                    normal := tri.normals[0] / 2 + {.5, .5, .5}
-                    npx.color = [4]u8{u8(normal.x*255), u8(normal.y*255), u8(normal.z*255), 255}
+                    n := normal / 2 + {.5, .5, .5}
+                    npx.color.rgb = [3]u8{u8(n.x*255), u8(n.y*255), u8(n.z*255)}
                 case .Faces:
-                    npx.color = color
+                    npx.color = debug_color
                 }
                 for {
                     opx_, ok := sync.atomic_compare_exchange_weak_explicit(
@@ -340,4 +421,27 @@ world_to_screen :: #force_inline proc(point: [3]f32) -> [2]i32 {
     p := point.xy * px_per_world_unit
     
     return {i32(p.x) + WIDTH / 2, i32(p.y) + HEIGHT / 2}
+}
+
+hot_reload_shaders :: proc() {
+    state, stdout, stderr, exec_err := os2.process_exec(
+        {command={"odin","build","Shaders/","-debug","-build-mode:shared"}},
+        context.allocator,
+    )
+    assert(exec_err == nil)
+    assert(state.exit_code == 0)
+    delete(stdout)
+    delete(stderr)
+    
+    if sync.mutex_guard(&g_shader_mutex) {
+        if g_shared.__handle != nil {
+            dynlib.unload_library(g_shared.__handle)
+            g_shared.__handle = nil
+        }
+        count, dyn_load_ok := dynlib.initialize_symbols(&g_shared, "Shaders.so")
+        assert(dyn_load_ok)
+        assert(count > 0)
+        
+        log.info("loaded shaders")
+    }
 }
