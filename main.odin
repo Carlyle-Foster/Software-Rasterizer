@@ -9,30 +9,35 @@ import "core:math/linalg"
 import "core:thread"
 import "core:sync"
 
-import sdl "vendor:sdl3"
-import gl "vendor:OpenGL"
+import rl "vendor:raylib"
+// import sdl "vendor:sdl3"
+// import gl "vendor:OpenGL"
 
 GL_VERSION_MAJOR :: 3
 GL_VERSION_MINOR :: 3
 
-vertex_source   ::  #load("./Shaders/default.vert", string)
-fragment_source ::  #load("./Shaders/default.frag", string)
-
 Color :: [4]f32
 
-Partial :: struct {
-    offset: int,
-    thread: ^thread.Thread,
-    target: [WIDTH*HEIGHT][4]u8,
-    depth_buffer: [WIDTH*HEIGHT]f32,
-}
-g_partials: [6]^Partial
+Thread :: thread.Thread
+
+g_threads: [6]^Thread
+
+g_selected_thread := -1
 
 g_draw_condition: sync.Cond
 g_draw_mutex: sync.Mutex
 g_draw_group: sync.Wait_Group
 
 g_go_render := false // Protected by `g_draw_mutex`
+
+g_target:           [WIDTH*HEIGHT]Pixel
+g_packed_target:    [WIDTH*HEIGHT][4]u8
+
+Pixel :: struct {
+    color: [4]u8,
+    depth: f32,
+}
+#assert(size_of(Pixel) == size_of(u64))
 
 BLACK   :: Color {0,0,0,1}
 WHITE   :: Color {1,1,1,1}
@@ -165,101 +170,6 @@ main :: proc() {
     defer delete(g_models)
     defer delete(g_entities)
 
-    init_ok := sdl.Init({.VIDEO})
-    assert(init_ok)
-    defer sdl.Quit()
-
-    // Initializing OpenGL
-
-    sdl.GL_SetAttribute(.CONTEXT_PROFILE_MASK,  i32(sdl.GLProfile.CORE))
-    sdl.GL_SetAttribute(.CONTEXT_MAJOR_VERSION, GL_VERSION_MAJOR)
-    sdl.GL_SetAttribute(.CONTEXT_MINOR_VERSION, GL_VERSION_MINOR)
-
-    depth_buffer_ok := sdl.GL_SetAttribute(.DEPTH_SIZE, 24)
-    assert(depth_buffer_ok)
-
-    window := sdl.CreateWindow("SoftWare Rasterizer 0.97", WIDTH, HEIGHT, {.OPENGL})
-    if window == nil {
-        log.panic("SDL3: failed to create window because of Error:", sdl.GetError())
-    }
-    defer sdl.DestroyWindow(window)
-
-    gl_context := sdl.GL_CreateContext(window)
-    defer sdl.GL_DestroyContext(gl_context)
-
-    gl.load_up_to(GL_VERSION_MAJOR, GL_VERSION_MINOR, sdl.gl_set_proc_address)
-
-    // Enabling vsync
-    vsync_ok := sdl.GL_SetSwapInterval(1)
-    assert(vsync_ok)
-
-
-    // Compiling & loading shaders
-
-    program, program_ok := gl.load_shaders_source(vertex_source, fragment_source)
-    assert(program_ok)
-    defer gl.DeleteProgram(program)
-
-    gl.UseProgram(program)
-
-    uniforms := gl.get_uniforms_from_program(program)
-    defer gl.destroy_uniforms(uniforms)
-
-    // Creating Handles to refer to the things we'll pass to OpenGL 
-    vao: u32
-    gl.GenVertexArrays(1, &vao)
-    defer gl.DeleteVertexArrays(1, &vao)
-
-    gl.BindVertexArray(vao)
-
-    vbo, ebo: u32
-    gl.GenBuffers(1, &vbo)
-    gl.GenBuffers(1, &ebo)
-    defer gl.DeleteBuffers(1, &vbo)
-    defer gl.DeleteBuffers(1, &ebo)
-
-    Vertex :: struct {
-        pos: [2]f32,
-        tex_coord: [2]f32,
-    }
-
-    vertices := []Vertex {
-        {{-1, +1}, {0, 1}},
-        {{-1, -1}, {1, 1}},
-        {{+1, -1}, {1, 0}},
-        {{+1, +1}, {0, 0}},
-    }
-    indices := []u8 {
-        0, 1, 2,
-        2, 3, 0,
-    }
-    gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
-    gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*size_of(vertices[0]), raw_data(vertices), gl.STATIC_DRAW)
-    //TODO: wtf is this     v
-	gl.EnableVertexAttribArray(0)
-	gl.EnableVertexAttribArray(1)
-    gl.VertexAttribPointer(0, 2, gl.FLOAT, false, size_of(vertices[0]), offset_of(Vertex, pos))
-    gl.VertexAttribPointer(1, 2, gl.FLOAT, false, size_of(vertices[0]), offset_of(Vertex, tex_coord))
-
-    gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo)
-    gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(indices)*size_of(indices[0]), raw_data(indices), gl.STATIC_DRAW)
-
-    tex: u32
-    gl.GenTextures(1, &tex)
-    gl.ActiveTexture(gl.TEXTURE0)
-    gl.BindTexture(gl.TEXTURE_2D, tex)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-    
-    depth_buf: u32
-    gl.GenTextures(1, &depth_buf)
-    gl.ActiveTexture(gl.TEXTURE1)
-    gl.BindTexture(gl.TEXTURE_2D, depth_buf)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
-
-    // OpenGL is basically setup now
-
     model, import_ok := import_obj_file("suzanne.obj")
     assert(import_ok)
     defer delete(model.faces)
@@ -270,55 +180,55 @@ main :: proc() {
     ent.roll = math.PI
     append(&g_entities, ent)
 
-    for &p, i in g_partials {
-        p = new(Partial)
-        p.offset = i
-        p.thread = thread.create_and_start_with_data(p, draw_entities)
+    for &t, i in g_threads {
+        t = thread.create_and_start_with_data(rawptr(uintptr(i)), draw_entities)
     }
     defer {
-        for p in g_partials {
-            thread.terminate(p.thread, 0)
-            thread.destroy(p.thread)
-            free(p)
+        for t in g_threads {
+            thread.terminate(t, 0)
+            thread.destroy(t)
         }
     }
 
     last_frame := time.tick_now()
 
-    gl.Enable(gl.BLEND)
-    gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-    gl.Enable(gl.DEPTH_TEST)
-    gl.DepthFunc(gl.LESS)
+    rl.SetTargetFPS(60)
+    rl.InitWindow(WIDTH, HEIGHT, "SoftWare Rasterizer 0.97")
+    defer rl.CloseWindow()
 
-    selected_partial := -1
-    loop: for {
+    rl_image := rl.Image {
+        data = raw_data(g_packed_target[:]),
+        width = WIDTH,
+        height = HEIGHT,
+        mipmaps = 1,
+        format = .UNCOMPRESSED_R8G8B8A8,
+    }
+    rl_texture := rl.LoadTextureFromImage(rl_image)
+
+    for !rl.WindowShouldClose() {
 		duration := time.tick_since(last_frame)
 		t := time.duration_milliseconds(duration)
         // log.info("frame lasted", t, "millis")
         last_frame = time.tick_now()
         _ = t
 
-        event: sdl.Event
-        for sdl.PollEvent(&event) {
-            #partial switch event.type {
-            case .KEY_DOWN:
-                switch event.key.key {
-                case sdl.K_S: g_view_mode = .Standard
-                case sdl.K_D: g_view_mode = .Depth
-                case sdl.K_N: g_view_mode = .Normals
-                case sdl.K_F: g_view_mode = .Faces
+        for key := rl.GetKeyPressed(); key != .KEY_NULL; key = rl.GetKeyPressed() {
+            #partial switch key {
+            case .S: g_view_mode = .Standard
+            case .D: g_view_mode = .Depth
+            case .N: g_view_mode = .Normals
+            case .F: g_view_mode = .Faces
 
-                case sdl.K_1..=sdl.K_6: selected_partial = int(event.key.key - sdl.K_1)
-                case sdl.K_0: selected_partial = -1
-                
-                case sdl.K_ESCAPE:
-                    break loop
-                }
-            case .QUIT:
-                break loop
+            case .ZERO..=.SIX: g_selected_thread = int(key - .ONE)
             }
         }
-        sync.wait_group_add(&g_draw_group, len(g_partials))
+        for &px in g_target {
+            px = {
+                color = {128, 230, 230, 255},
+                depth = math.INF_F32,
+            }
+        }
+        sync.wait_group_add(&g_draw_group, len(g_threads))
         //TODO: are these guards really necessary?
         if sync.mutex_guard(&g_draw_mutex) {
             g_go_render = true
@@ -328,76 +238,60 @@ main :: proc() {
         if sync.mutex_guard(&g_draw_mutex) {
             g_go_render = false
         }
-
-        gl.Viewport(0, 0, WIDTH, HEIGHT)
-
-        gl.ClearColor(.5, .9, .9, 1)
-        gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-
-        gl.BindVertexArray(vao)
-
-        u_texture   := uniforms["u_texture"]
-        u_depth_buf := uniforms["u_depth_buf"]
-
-        for p, i in g_partials {
-            if selected_partial > -1 && selected_partial != i { continue }
-
-            gl.ActiveTexture(gl.TEXTURE0)
-            gl.BindTexture(gl.TEXTURE_2D, tex)
-            gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, WIDTH, HEIGHT, 0, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(p.target[:]))
-            gl.Uniform1i(u_texture.location, 0)
-
-            gl.ActiveTexture(gl.TEXTURE1)
-            gl.BindTexture(gl.TEXTURE_2D, depth_buf)
-            gl.TexImage2D(gl.TEXTURE_2D, 0, gl.R16F, WIDTH, HEIGHT, 0, gl.RED, gl.FLOAT, raw_data(p.depth_buffer[:]))
-            gl.Uniform1i(u_depth_buf.location, 1)
-    
-            gl.DrawElements(gl.TRIANGLES, i32(len(indices)), gl.UNSIGNED_BYTE, nil)
+        for px, i in g_target {
+            g_packed_target[i] = px.color
         }
+        rl.UpdateTexture(rl_texture, rl_image.data)
+
+        rl.BeginDrawing()
+        rl.DrawTexture(rl_texture, 0, 0, rl.WHITE)
+        rl.EndDrawing()
 
         for &e, i in g_entities {
             s := f32(i+1)
             e.pitch += 0.01 / s
             e.yaw += 0.02 * s
         }
-        sdl.GL_SwapWindow(window)
 
         free_all(context.temp_allocator)
     }
 }
-// 128, 230, 230, 255
-draw_entities :: proc(partial: rawptr) {
-    p := (^Partial)(partial)
+
+draw_entities :: proc(offset: rawptr) {
+    offset := int(uintptr(offset))
     for {
         wait: for {
             if sync.mutex_guard(&g_draw_mutex) {
                 sync.cond_wait(&g_draw_condition, &g_draw_mutex)
+                
+                // this check detects spurious wakeups
                 if g_go_render { break }
             }
         }
-        for &px in p.target {
-            px = {}
-        }
-        for &px in p.depth_buffer {
-            px = 1.
-        }
+        if g_selected_thread > -1 && g_selected_thread != offset {
+            sync.wait_group_done(&g_draw_group)
+            continue
+        } 
         for e in g_entities {
             mtx := get_transform(e)
             faces := g_models[e.model].faces
             num_faces := len(faces)
-            stride := len(g_partials)
-            for i := p.offset; i < num_faces; i += stride {
+            stride := len(g_threads)
+
+            // All the real work gets done here
+            for i := offset; i < num_faces; i += stride {
                 face := faces[i]
                 c := transmute([4]u8)(u32((f32(i) / f32(num_faces)) * 16_000_000))
                 color := [4]u8{c.r, c.g, c.b, 255}
-                draw_triangle(face, mtx, color, p)
+                draw_triangle(face, mtx, color)
             }
         }
         sync.wait_group_done(&g_draw_group)
     }
 }
 
-draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, color: [4]u8, p: ^Partial) #no_bounds_check {
+// This is thread-safe!
+draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, color: [4]u8) #no_bounds_check {
     t := translate_face(tri.vertices, transform)
     a, b, c := world_to_screen(t[0]), world_to_screen(t[1]), world_to_screen(t[2])
 
@@ -416,24 +310,31 @@ draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, col
             i := y*WIDTH + x
             yes, weights := is_inside_triangle({x, y}, a, b, c)
             depth := linalg.dot(weights, [3]f32{t[0].z, t[1].z, t[2].z})
-            MAX_DEPTH :: 10_000
-            depth = depth * (1. / MAX_DEPTH)
-            depth = clamp(depth, 0, 1)
-            if yes && depth < p.depth_buffer[i] {
-                p.depth_buffer[i] = depth
+            opx := g_target[i]
+            if yes && depth < opx.depth {
+                npx := Pixel{depth=depth}
 
                 switch g_view_mode {
                 case .Standard:
                     unimplemented()
                 case .Depth:
-                    //TODO: this is kinda stupid
-                    v := u8(depth*MAX_DEPTH/5*255)
-                    p.target[i] = [4]u8{v,v,v,255}
+                    v := u8(depth/5*255)
+                    npx.color = {v,v,v,255}
                 case .Normals:
                     normal := tri.normals[0] / 2 + {.5, .5, .5}
-                    p.target[i] = [4]u8{u8(normal.x*255), u8(normal.y*255), u8(normal.z*255), 255}
+                    npx.color = [4]u8{u8(normal.x*255), u8(normal.y*255), u8(normal.z*255), 255}
                 case .Faces:
-                    p.target[i] = color
+                    npx.color = color
+                }
+                for {
+                    opx_, ok := sync.atomic_compare_exchange_weak(cast(^u64)&g_target[i], transmute(u64)opx, transmute(u64)npx)
+                    if ok {
+                        break
+                    }
+                    opx = transmute(Pixel)opx_
+                    if depth >= opx.depth {
+                        break
+                    }
                 }
             }            
         }
