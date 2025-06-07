@@ -3,18 +3,18 @@ package rasterizer
 import "core:log"
 import "core:fmt"
 import "core:mem"
-import "core:time"
 import "core:math"
 import "core:math/linalg"
 import "core:thread"
 import "core:sync"
 
 import rl "vendor:raylib"
-// import sdl "vendor:sdl3"
-// import gl "vendor:OpenGL"
 
-GL_VERSION_MAJOR :: 3
-GL_VERSION_MINOR :: 3
+
+WIDTH :: 800
+HEIGHT :: 600
+
+FOV :: 90
 
 Color :: [4]f32
 
@@ -27,6 +27,7 @@ g_selected_thread := -1
 g_draw_condition: sync.Cond
 g_draw_mutex: sync.Mutex
 g_draw_group: sync.Wait_Group
+g_barrier: sync.Barrier
 
 g_go_render := false // Protected by `g_draw_mutex`
 
@@ -37,21 +38,6 @@ Pixel :: struct {
     color: [4]u8,
     depth: f32,
 }
-#assert(size_of(Pixel) == size_of(u64))
-
-BLACK   :: Color {0,0,0,1}
-WHITE   :: Color {1,1,1,1}
-
-RED     :: Color {1,0,0,1}
-GREEN   :: Color {0,1,0,1}
-BLUE    :: Color {0,0,1,1}
-
-DEEP    :: Color {0.12, 0.15, 0.62, 1}
-
-WIDTH :: 800
-HEIGHT :: 600
-
-FOV :: 90
 
 ViewMode :: enum {
     Standard,
@@ -81,12 +67,11 @@ Entity :: struct {
     yaw: f32,
     pitch: f32,
     roll: f32,
-    color: Color,
 }
 
 g_entities: [dynamic]Entity
 
-create_entity :: proc(model: int, position: [3]f32, scale: f32, color: Color) -> Entity {
+create_entity :: proc(model: int, position: [3]f32, scale: f32) -> Entity {
     return {
         model=model,
         position=position,
@@ -94,7 +79,6 @@ create_entity :: proc(model: int, position: [3]f32, scale: f32, color: Color) ->
         yaw=0,
         pitch=0,
         roll=0,
-        color=color,
     }
 }
 
@@ -175,7 +159,7 @@ main :: proc() {
     defer delete(model.faces)
     append(&g_models, model)
 
-    ent := create_entity(0, {0, 0, 3}, 1, DEEP)
+    ent := create_entity(0, {0, 0, 3}, 1)
     ent.yaw = math.PI
     ent.roll = math.PI
     append(&g_entities, ent)
@@ -189,8 +173,6 @@ main :: proc() {
             thread.destroy(t)
         }
     }
-
-    last_frame := time.tick_now()
 
     rl.SetTargetFPS(60)
     rl.InitWindow(WIDTH, HEIGHT, "SoftWare Rasterizer 0.97")
@@ -206,12 +188,6 @@ main :: proc() {
     rl_texture := rl.LoadTextureFromImage(rl_image)
 
     for !rl.WindowShouldClose() {
-		duration := time.tick_since(last_frame)
-		t := time.duration_milliseconds(duration)
-        // log.info("frame lasted", t, "millis")
-        last_frame = time.tick_now()
-        _ = t
-
         for key := rl.GetKeyPressed(); key != .KEY_NULL; key = rl.GetKeyPressed() {
             #partial switch key {
             case .S: g_view_mode = .Standard
@@ -229,7 +205,8 @@ main :: proc() {
             }
         }
         sync.wait_group_add(&g_draw_group, len(g_threads))
-        //TODO: are these guards really necessary?
+        sync.barrier_init(&g_barrier, len(g_threads))
+        // These guards are in case of a spurious wakeup
         if sync.mutex_guard(&g_draw_mutex) {
             g_go_render = true
         }
@@ -237,9 +214,6 @@ main :: proc() {
         sync.wait_group_wait(&g_draw_group)
         if sync.mutex_guard(&g_draw_mutex) {
             g_go_render = false
-        }
-        for px, i in g_target {
-            g_packed_target[i] = px.color
         }
         rl.UpdateTexture(rl_texture, rl_image.data)
 
@@ -252,7 +226,6 @@ main :: proc() {
             e.pitch += 0.01 / s
             e.yaw += 0.02 * s
         }
-
         free_all(context.temp_allocator)
     }
 }
@@ -263,28 +236,41 @@ draw_entities :: proc(offset: rawptr) {
         wait: for {
             if sync.mutex_guard(&g_draw_mutex) {
                 sync.cond_wait(&g_draw_condition, &g_draw_mutex)
-                
-                // this check detects spurious wakeups
+
+                // This check detects spurious wakeups
                 if g_go_render { break }
             }
         }
-        if g_selected_thread > -1 && g_selected_thread != offset {
-            sync.wait_group_done(&g_draw_group)
-            continue
-        } 
-        for e in g_entities {
-            mtx := get_transform(e)
-            faces := g_models[e.model].faces
-            num_faces := len(faces)
-            stride := len(g_threads)
-
-            // All the real work gets done here
-            for i := offset; i < num_faces; i += stride {
-                face := faces[i]
-                c := transmute([4]u8)(u32((f32(i) / f32(num_faces)) * 16_000_000))
-                color := [4]u8{c.r, c.g, c.b, 255}
-                draw_triangle(face, mtx, color)
+        if g_selected_thread == -1 || g_selected_thread == offset {
+            for e in g_entities {
+                mtx := get_transform(e)
+                faces := g_models[e.model].faces
+                num_faces := len(faces)
+                stride := len(g_threads)
+    
+                // All the rendering gets done here
+                for i := offset; i < num_faces; i += stride {
+                    face := faces[i]
+                    c := transmute([4]u8)(u32((f32(i) / f32(num_faces)) * 16_000_000))
+                    color := [4]u8{c.r, c.g, c.b, 255}
+                    draw_triangle(face, mtx, color)
+                }
             }
+        }        
+        // Threads share the work of packing the data
+        px_per_thread := len(g_target) / len(g_threads)
+        px_remaining := len(g_target) % len(g_threads)
+
+        px_start := offset * px_per_thread
+        px_end := px_start + px_per_thread
+
+        if offset == len(g_threads)-1 {
+            px_end += px_remaining
+        }
+        // We wait until the image has finished rendering
+        sync.barrier_wait(&g_barrier)
+        for i := px_start; i < px_end; i += 1 {
+            g_packed_target[i] = g_target[i].color
         }
         sync.wait_group_done(&g_draw_group)
     }
@@ -327,7 +313,13 @@ draw_triangle :: #force_inline  proc(tri: Tri_3D, transform: matrix[4,4]f32, col
                     npx.color = color
                 }
                 for {
-                    opx_, ok := sync.atomic_compare_exchange_weak(cast(^u64)&g_target[i], transmute(u64)opx, transmute(u64)npx)
+                    opx_, ok := sync.atomic_compare_exchange_weak_explicit(
+                        cast(^u64)&g_target[i],
+                        transmute(u64)opx,
+                        transmute(u64)npx,
+                        .Relaxed,
+                        .Relaxed,
+                    )
                     if ok {
                         break
                     }
