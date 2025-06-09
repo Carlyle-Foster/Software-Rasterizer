@@ -20,7 +20,6 @@ import cmn "common"
 
 import "obj"
 
-FOV     :: cmn.FOV
 
 Color :: [4]f32
 
@@ -33,6 +32,8 @@ ShaderName :: string
 g_width: i32    = 800
 g_height: i32   = 600
 g_last_dimensions: [2]i32
+
+g_fov: f32 = 40
 
 g_threads: [6]^Thread
 
@@ -60,6 +61,7 @@ EntityDrawer :: #type proc(
     texture: ^Image,
     width: i32,
     height: i32,
+    fov: f32,
 )
 
 Shader :: struct {
@@ -211,6 +213,9 @@ main :: proc() {
             case .F: g_view_mode = .Faces
             case .T: g_view_mode = .TexCoords
 
+            case .UP: g_fov     += 3 if rl.IsKeyDown(.LEFT_CONTROL) else 10
+            case .DOWN: g_fov   -= 3 if rl.IsKeyDown(.LEFT_CONTROL) else 10
+
             case .ZERO..=.SIX: g_selected_thread = int(key - .ONE)
 
             case .R: thread.run(proc(){ hot_reload_shaders(.Unoptimized) }, context)
@@ -267,18 +272,24 @@ draw_entities :: proc(offset: rawptr) {
         }
         if g_selected_thread == -1 || g_selected_thread == offset {
             for e in g_entities {
-                transform, rotation := get_transform_and_rotation(e)
                 faces := g_models[e.model].faces
+                transform, rotation := get_transform_and_rotation(e)
                 stride := len(g_threads)
-
-                // All the rendering gets done here
+                shader: Shader
                 if g_view_mode == .Standard {
-                    shader := g_shaders[e.shader] or_else g_shaders["error"]
-                    shader.run(faces, offset, stride, transform, rotation, g_texture, g_width, g_height)
+                    shader = g_shaders[e.shader] or_else g_shaders["error"]
+                } else {
+                    shader = g_shaders["DEBUG"]
                 }
-                else {
-                    g_shaders["DEBUG"].run(faces, offset, stride, transform, rotation, g_texture, g_width, g_height)
-                }
+                // All the rendering gets done here
+                shader.run(
+                    faces,
+                    offset, stride,
+                    transform, rotation,
+                    g_texture,
+                    g_width, g_height,
+                    g_fov,
+                )
             }
         }        
         // Threads share the work of packing the data

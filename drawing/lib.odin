@@ -11,7 +11,7 @@ import "core:sync"
 import shaders "../Shaders/common"
 import cmn "../common"
 
-FOV     :: cmn.FOV
+// FOV     :: cmn.FOV
 
 Pixel :: cmn.Pixel
 ViewMode :: cmn.ViewMode
@@ -24,6 +24,8 @@ g_target: ^[dynamic]Pixel
 
 @(export)
 g_view_mode: ^ViewMode
+
+g_height_of_view: f32
 
 is_inside_triangle :: #force_inline proc(point, ta, tb, tc: [2]i32) -> (yes: bool, weights: [3]f32) {
     areaABP := signed_tri_area(ta, tb, point)
@@ -71,7 +73,10 @@ draw_entity :: proc(
     texture: ^Image,
     width: i32,
     height: i32,
+    fov: f32,
 ) {
+    g_height_of_view = math.tan(math.to_radians_f32(fov) / 2) * 2
+
     num_faces := len(faces)
     for i := offset; i < num_faces; i += stride {
         face := faces[i]
@@ -177,8 +182,7 @@ draw_triangle :: #force_inline proc(
 }
 
 world_to_screen :: #force_inline proc(point: [3]f32, width, height: i32) -> [2]i32 {
-    height_of_view := math.tan(math.to_radians_f32(FOV) / 2) * 2
-    px_per_world_unit := f32(height) / height_of_view / point.z
+    px_per_world_unit := f32(height) / g_height_of_view / point.z
 
     p := point.xy * px_per_world_unit
     

@@ -2,8 +2,6 @@ package common
 
 import "core:image"
 
-FOV :: 40
-
 Image :: image.Image
 
 Pixel :: struct {

@@ -10,15 +10,13 @@ import "core:time"
 
 import vmem "core:mem/virtual"
 
-Error :: os2.General_Error
-
 ReloadStyle :: enum {
     Unoptimized,
     Optimized,
     Late_Optimized,
 }
 
-hot_reload_shaders :: proc(style: ReloadStyle) -> (err: Error) {
+hot_reload_shaders :: proc(style: ReloadStyle) -> (err: os2.General_Error) {
     arena_: vmem.Arena
     arena := vmem.arena_allocator(&arena_)
     defer free_all(arena)
@@ -36,7 +34,7 @@ hot_reload_shaders :: proc(style: ReloadStyle) -> (err: Error) {
         plugin_name := fmt.aprintf("Shaders/{}/plugin.odin", name, allocator=arena)
         plugin, stat_err := os2.stat(plugin_name, arena)
         if stat_err != nil {
-            if stat_err.(Error) == .Not_Exist {
+            if stat_err.(os2.General_Error) == .Not_Exist {
                 log.errorf("Shaders/{} is missing it's 'plugin.odin' file", name)
             } else {
                 log.error("failed to read ", plugin_name, " because of Error:", os2.error_string(stat_err))
