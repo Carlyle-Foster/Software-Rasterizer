@@ -1,5 +1,7 @@
 package rasterizer
 
+import "base:runtime"
+
 import "core:log"
 import "core:fmt"
 import "core:mem"
@@ -11,19 +13,28 @@ import "core:image"
 import "core:image/png"
 import "core:dynlib"
 import "core:os/os2"
+import "core:strings"
+import "core:time"
+
+import vmem "core:mem/virtual"
+
+import "core:os"
+_ :: os
 
 import rl "vendor:raylib"
 
 
+// NOTE: keep this up-to-date with `drawing/lib.odin`
+// at least until we have something better going..
 WIDTH :: 800
 HEIGHT :: 600
-
 FOV :: 40
 
 Color :: [4]f32
 
 Image :: image.Image
 Thread :: thread.Thread
+Allocator :: runtime.Allocator
 
 ShaderName :: string
 
@@ -42,20 +53,22 @@ g_frame_count := 0 // Protected by `g_frame_count_mutex`
 g_target:           [WIDTH*HEIGHT]Pixel
 g_packed_target:    [WIDTH*HEIGHT][4]u8
 
-ShaderInput :: struct {
-    normal: [3]f32,
-    tex_coord: [2]f32,
-    depth: f32,
+g_shaders: map[ShaderName]Shader
+
+TriangleDrawer :: #type proc(
+    tri: Tri_3D,
+    transform: matrix[4,4]f32,
+    rotation: matrix[3, 3]f32,
+    debug_color: [4]u8,
+    view_mode: ViewMode,
     texture: ^Image,
-}
-FragShader :: #type proc(using SI: ShaderInput) -> (color: [4]f32)
+)
 
-Symbols :: struct {
-    shaders: ^map[ShaderName]FragShader,
-
-    __handle: dynlib.Library,
+Shader :: struct {
+    run: TriangleDrawer,
+    source: dynlib.Library,
+    last_modified: time.Time,
 }
-g_shared: Symbols
 
 Pixel :: struct {
     color: [4]u8,
@@ -118,42 +131,6 @@ get_transform_and_rotation :: proc(e: Entity) -> (transform: matrix[4, 4]f32, ro
     return
 }
 
-translate_face :: #force_inline proc(face: [3][3]f32, mtx: matrix[4, 4]f32) -> [3][3]f32 {
-    t := [3][3]f32 {
-        (mtx * [4]f32{face[0].x, face[0].y, face[0].z, 1}).xyz,
-        (mtx * [4]f32{face[1].x, face[1].y, face[1].z, 1}).xyz,
-        (mtx * [4]f32{face[2].x, face[2].y, face[2].z, 1}).xyz,
-    }
-    return t
-}
-
-is_inside_triangle :: #force_inline proc(point, ta, tb, tc: [2]i32) -> (yes: bool, weights: [3]f32) {
-    areaABP := signed_tri_area(ta, tb, point)
-    areaBCP := signed_tri_area(tb, tc, point)
-    areaCAP := signed_tri_area(tc, ta, point)
-    
-    total_area := areaABP + areaBCP + areaCAP
-    if total_area <= 0 { return }
-    inv_area_sum := 1 / f32(total_area)
-    
-    weights[0] = f32(areaBCP) * inv_area_sum
-    weights[1] = f32(areaCAP) * inv_area_sum
-    weights[2] = f32(areaABP) * inv_area_sum
-
-    yes = areaABP >= 0 && areaBCP >= 0 && areaCAP >= 0
-
-    return
-}
-
-perp :: #force_inline proc(point: [2]i32) -> [2]i32 {
-    return { point.y, -point.x }
-}
-
-// TODO: the i32 might overflow?
-signed_tri_area :: #force_inline proc(a, b, c: [2]i32) -> i32 {
-    return linalg.dot(c - a, perp(b - a)) / 2
-}
-
 g_texture: ^Image
 
 sample_texture :: #force_inline proc(tex: ^Image, tex_coord: [2]f32) -> [4]f32 {
@@ -197,15 +174,19 @@ main :: proc() {
     defer delete(g_models)
     defer delete(g_entities)
 
-    hot_reload_shaders()
-    defer dynlib.unload_library(g_shared.__handle)
+    hot_reload_shaders(true)
+    defer delete(g_shaders)
+    defer for name, shader in g_shaders {
+        delete(name)
+        dynlib.unload_library(shader.source)
+    }
 
     model, import_ok := import_obj_file("suzanne.obj")
     assert(import_ok)
     defer delete(model.faces)
     append(&g_models, model)
 
-    ent := create_entity(0, {0, 0, 7}, 1, "default")
+    ent := create_entity(0, {0, 0, 7}, 1, "standard")
     ent.yaw = math.PI
     ent.roll = math.PI
     append(&g_entities, ent)
@@ -216,7 +197,7 @@ main :: proc() {
     defer png.destroy(g_texture)
 
     for &t, i in g_threads {
-        t = thread.create_and_start_with_data(rawptr(uintptr(i)), draw_entities)
+        t = thread.create_and_start_with_data(rawptr(uintptr(i)), draw_entities, context)
     }
     defer {
         for t in g_threads {
@@ -248,7 +229,7 @@ main :: proc() {
 
             case .ZERO..=.SIX: g_selected_thread = int(key - .ONE)
 
-            case .R: thread.run(hot_reload_shaders)
+            case .R: thread.run(proc(){ hot_reload_shaders(false) }, context)
 
             }
         }
@@ -302,7 +283,7 @@ draw_entities :: proc(offset: rawptr) {
         if g_selected_thread == -1 || g_selected_thread == offset {
             for e in g_entities {
                 transform, rotation := get_transform_and_rotation(e)
-                shader := g_shared.shaders[e.shader] or_else g_shared.shaders["error"]
+                shader := g_shaders[e.shader] or_else g_shaders["error"]
                 faces := g_models[e.model].faces
                 num_faces := len(faces)
                 stride := len(g_threads)
@@ -313,7 +294,7 @@ draw_entities :: proc(offset: rawptr) {
                     c := transmute([4]u8)(u32((f32(i) / f32(num_faces)) * 16_000_000))
                     debug_color := [4]u8{c.r, c.g, c.b, 255}
 
-                    draw_triangle(face, transform, rotation, shader, debug_color)
+                    shader.run(face, transform, rotation, debug_color, g_view_mode, g_texture)
                 }
             }
         }        
@@ -336,112 +317,73 @@ draw_entities :: proc(offset: rawptr) {
     }
 }
 
-// This is thread-safe!
-draw_triangle :: #force_inline proc(
-    tri: Tri_3D,
-    transform: matrix[4,4]f32,
-    rotation: matrix[3, 3]f32,
-    shader: FragShader,
-    debug_color: [4]u8,
-) #no_bounds_check {
-    t := translate_face(tri.vertices, transform)
-    a, b, c := world_to_screen(t[0]), world_to_screen(t[1]), world_to_screen(t[2])
+hot_reload_shaders :: proc(optimized: bool) {
+    arena_: vmem.Arena
+    arena := vmem.arena_allocator(&arena_)
+    defer free_all(arena)
 
-    // backface culling
-    if signed_tri_area(a, b, c) <= 0 {
-        return
-    }
+    files, read_dir_err := os2.read_all_directory_by_path("Shaders",  arena)
+    assert(read_dir_err == nil)
 
-    left    :=  clamp(min(a.x, b.x, c.x), 0, WIDTH)
-    right   :=  clamp(max(a.x, b.x, c.x), 0, WIDTH)
-    top     :=  clamp(min(a.y, b.y, c.y), 0, HEIGHT)
-    bottom  :=  clamp(max(a.y, b.y, c.y), 0, HEIGHT)
+    shaders := make([dynamic]os2.File_Info, allocator=arena)
 
-    for y := top; y < bottom; y += 1 {
-        for x := left; x < right; x += 1 {
-            i := y*WIDTH + x
-            yes, weights := is_inside_triangle({x, y}, a, b, c)
-            //TODO: this probably is wrong but i won't be certain 'till i see the artifacts
-            depth := linalg.dot(weights, [3]f32{t[0].z, t[1].z, t[2].z})
-            opx := g_target[i]
-            if yes && depth < opx.depth {
-                npx := Pixel{color={255, 0, 255, 255}, depth=depth}
-                
-                normal := 
-                    tri.normals[0] * weights[0] + 
-                    tri.normals[1] * weights[1] + 
-                    tri.normals[2] * weights[2]
-                tex_coord := 
-                    tri.tex_coords[0] * weights[0] + 
-                    tri.tex_coords[1] * weights[1] + 
-                    tri.tex_coords[2] * weights[2]
+    for file in files {
+        name := file.name
 
-                switch g_view_mode {
-                case .Standard:
-                    normal = normal * linalg.transpose(rotation)
-
-                    rgba := shader({normal, tex_coord, depth, g_texture})
-
-                    rgba = linalg.vector4_linear_to_srgb(rgba)
-                    npx.color.rgb = {u8(rgba.r*255), u8(rgba.g*255), u8(rgba.b*255)}
-                case .Depth:
-                    v := u8(depth/5*255)
-                    npx.color.rgb = v
-                case .Normals:
-                    n := normal / 2 + {.5, .5, .5}
-                    npx.color.rgb = [3]u8{u8(n.x*255), u8(n.y*255), u8(n.z*255)}
-                case .Faces:
-                    npx.color = debug_color
-                }
-                for {
-                    opx_, ok := sync.atomic_compare_exchange_weak_explicit(
-                        cast(^u64)&g_target[i],
-                        transmute(u64)opx,
-                        transmute(u64)npx,
-                        .Relaxed,
-                        .Relaxed,
-                    )
-                    if ok {
-                        break
-                    }
-                    opx = transmute(Pixel)opx_
-                    if depth >= opx.depth {
-                        break
-                    }
-                }
-            }            
+        if name == "common" || name == ".current_plugin" { continue }
+        if name not_in g_shaders {
+            append(&shaders, file)
+            continue
+        }
+        if time.diff(g_shaders[file.name].last_modified, file.modification_time) > 0 {
+            append(&shaders, file)
         }
     }
+    _hot_reload_shaders(shaders[:], optimized, arena)
 }
 
-world_to_screen :: #force_inline proc(point: [3]f32) -> [2]i32 {
-    height_of_view := math.tan(math.to_radians_f32(FOV) / 2) * 2
-    px_per_world_unit := HEIGHT / height_of_view / point.z
+_hot_reload_shaders :: proc(files: []os2.File_Info, optimized: bool, arena: Allocator) {
+    CURRENT_PLUGIN :: "Shaders/.current_plugin"
 
-    p := point.xy * px_per_world_unit
-    
-    return {i32(p.x) + WIDTH / 2, i32(p.y) + HEIGHT / 2}
-}
+    for file in files {
+        name := file.name
 
-hot_reload_shaders :: proc() {
-    state, stdout, stderr, exec_err := os2.process_exec(
-        {command={"odin","build","Shaders/","-debug","-build-mode:shared"}},
-        context.allocator,
-    )
-    assert(exec_err == nil)
-    assert(state.exit_code == 0)
-    delete(stdout)
-    delete(stderr)
-    
-    if sync.mutex_guard(&g_shader_mutex) {
-        if g_shared.__handle != nil {
-            dynlib.unload_library(g_shared.__handle)
-            g_shared.__handle = nil
+        remove_err := os2.remove(CURRENT_PLUGIN)
+        assert(remove_err == nil || remove_err.(os2.General_Error) == .Not_Exist)
+        os2.symlink(file.fullpath, CURRENT_PLUGIN)
+
+        o := "-o:speed" if optimized else "-o:none"
+        out_path := fmt.aprintf("-out:Shaders/{}/.{}.so", name, name, allocator=arena)
+        state, _, _, exec_err := os2.process_exec(
+            {command={"odin","build","drawing",o,"-debug","-build-mode:shared",out_path}},
+            allocator=arena,
+        )
+        assert(exec_err == nil)
+        assert(state.exit_code == 0)
+        log.info("recompiled", out_path, "with", o)
+
+        if sync.mutex_guard(&g_shader_mutex) {
+            if name in g_shaders {
+                dynlib.unload_library(g_shaders[name].source)
+            } else {
+                name = strings.clone(name)
+            }
+            lib_name := fmt.aprintf("Shaders/{}/.{}.so", name, name, allocator=arena)
+            log.info("loading", lib_name)
+            lib, did_load := dynlib.load_library(lib_name)
+            assert(did_load)
+
+            addr, found := dynlib.symbol_address(lib, "draw_triangle")
+            assert(found)
+            g_shaders[name] = {run=cast(TriangleDrawer)addr, source=lib, last_modified=file.modification_time}
+
+            target, hit := dynlib.symbol_address(lib, "g_target")
+            assert(hit)
+            (^^[WIDTH*HEIGHT]Pixel)(target)^ = &g_target
+            
+            log.info("loaded shader", name)
         }
-        count, dyn_load_ok := dynlib.initialize_symbols(&g_shared, "Shaders.so")
-        assert(dyn_load_ok)
-        assert(count > 0)
-        
-        log.info("loaded shaders")
     }
+    if !optimized { _hot_reload_shaders(files, true, arena) }
+    log.info()
 }

@@ -1,5 +1,6 @@
 ols.json
 rasterizer
+.current_plugin
 *.so
 *.dll
 *.dylib
