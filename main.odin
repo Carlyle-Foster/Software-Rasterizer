@@ -20,8 +20,6 @@ import cmn "common"
 
 import "obj"
 
-WIDTH   :: cmn.WIDTH
-HEIGHT  :: cmn.HEIGHT
 FOV     :: cmn.FOV
 
 Color :: [4]f32
@@ -31,6 +29,10 @@ Thread :: thread.Thread
 Allocator :: runtime.Allocator
 
 ShaderName :: string
+
+g_width: i32    = 800
+g_height: i32   = 600
+g_last_dimensions: [2]i32
 
 g_threads: [6]^Thread
 
@@ -44,8 +46,8 @@ g_barrier: sync.Barrier
 
 g_frame_count := 0 // Protected by `g_frame_count_mutex`
 
-g_target:           [WIDTH*HEIGHT]Pixel
-g_packed_target:    [WIDTH*HEIGHT][4]u8
+g_target:           [dynamic]Pixel
+g_packed_target:    [dynamic][4]u8
 
 g_shaders: map[ShaderName]Shader
 
@@ -56,6 +58,8 @@ EntityDrawer :: #type proc(
     transform: matrix[4,4]f32,
     rotation: matrix[3, 3]f32,
     texture: ^Image,
+    width: i32,
+    height: i32,
 )
 
 Shader :: struct {
@@ -138,6 +142,8 @@ main :: proc() {
     
     defer delete(g_models)
     defer delete(g_entities)
+    defer delete(g_target)
+    defer delete(g_packed_target)
 
     hot_reload_shaders(true)
     defer delete(g_shaders)
@@ -172,19 +178,31 @@ main :: proc() {
     }
 
     rl.SetTargetFPS(60)
-    rl.InitWindow(WIDTH, HEIGHT, "SoftWare Rasterizer 0.97")
+    rl.SetConfigFlags({.WINDOW_RESIZABLE})
+    rl.InitWindow(g_width, g_height, "SoftWare Rasterizer 0.97")
     defer rl.CloseWindow()
 
-    rl_image := rl.Image {
-        data = raw_data(g_packed_target[:]),
-        width = WIDTH,
-        height = HEIGHT,
-        mipmaps = 1,
-        format = .UNCOMPRESSED_R8G8B8A8,
-    }
-    rl_texture := rl.LoadTextureFromImage(rl_image)
+    rl_image: rl.Image
+    rl_texture: rl.Texture
 
     for !rl.WindowShouldClose() {
+        g_width = rl.GetRenderWidth()
+        g_height = rl.GetRenderHeight()
+        resize(&g_target, g_width*g_height)
+        resize(&g_packed_target, g_width*g_height)
+
+        if g_width != g_last_dimensions.x || g_height != g_last_dimensions.y {
+            rl_image = rl.Image {
+                data = raw_data(g_packed_target[:]),
+                width = g_width,
+                height = g_height,
+                mipmaps = 1,
+                format = .UNCOMPRESSED_R8G8B8A8,
+            }
+            rl_texture = rl.LoadTextureFromImage(rl_image)
+        }
+        g_last_dimensions = {g_width, g_height}
+
         for key := rl.GetKeyPressed(); key != .KEY_NULL; key = rl.GetKeyPressed() {
             #partial switch key {
             case .S: g_view_mode = .Standard
@@ -213,6 +231,7 @@ main :: proc() {
             sync.cond_broadcast(&g_draw_condition)
             sync.wait_group_wait(&g_draw_group)
         }
+        
         rl.UpdateTexture(rl_texture, rl_image.data)
 
         rl.BeginDrawing()
@@ -254,10 +273,10 @@ draw_entities :: proc(offset: rawptr) {
                 // All the rendering gets done here
                 if g_view_mode == .Standard {
                     shader := g_shaders[e.shader] or_else g_shaders["error"]
-                    shader.run(faces, offset, stride, transform, rotation, g_texture)
+                    shader.run(faces, offset, stride, transform, rotation, g_texture, g_width, g_height)
                 }
                 else {
-                    g_shaders["DEBUG"].run(faces, offset, stride, transform, rotation, g_texture)
+                    g_shaders["DEBUG"].run(faces, offset, stride, transform, rotation, g_texture, g_width, g_height)
                 }
             }
         }        

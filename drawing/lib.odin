@@ -10,8 +10,6 @@ import "core:sync"
 import shaders "../Shaders/common"
 import cmn "../common"
 
-WIDTH   :: cmn.WIDTH
-HEIGHT  :: cmn.HEIGHT
 FOV     :: cmn.FOV
 
 Pixel :: cmn.Pixel
@@ -21,7 +19,7 @@ Tri_3D :: cmn.Tri_3D
 Image :: image.Image
 
 @(export)
-g_target: ^[WIDTH*HEIGHT]Pixel
+g_target: ^[dynamic]Pixel
 
 @(export)
 g_view_mode: ^ViewMode
@@ -70,6 +68,8 @@ draw_entity :: proc(
     transform: matrix[4,4]f32,
     rotation: matrix[3, 3]f32,
     texture: ^Image,
+    width: i32,
+    height: i32,
 ) {
     num_faces := len(faces)
     for i := offset; i < num_faces; i += stride {
@@ -80,7 +80,7 @@ draw_entity :: proc(
             c := transmute([4]u8)(u32((f32(i) / f32(num_faces)) * 16_000_000))
             debug_color = [4]u8{c.r, c.g, c.b, 255}
         }
-        draw_triangle(face, transform, rotation, debug_color, texture, raw_data(g_target))
+        draw_triangle(face, transform, rotation, debug_color, texture, width, height)
     }
 }
 
@@ -91,26 +91,29 @@ draw_triangle :: #force_inline proc(
     rotation: matrix[3, 3]f32,
     debug_color: [4]u8,
     texture: ^Image,
-    target: [^]Pixel,
+    width: i32,
+    height: i32,
 ) #no_bounds_check {
+    target := raw_data(g_target[:])
+
     t := translate_face(tri.vertices, transform)
-    a := world_to_screen(t[0])
-    b := world_to_screen(t[1])
-    c := world_to_screen(t[2])
+    a := world_to_screen(t[0], width, height)
+    b := world_to_screen(t[1], width, height)
+    c := world_to_screen(t[2], width, height)
 
     // backface culling
     if signed_tri_area(a, b, c) <= 0 {
         return
     }
 
-    left    :=  clamp(min(a.x, b.x, c.x), 0, WIDTH)
-    right   :=  clamp(max(a.x, b.x, c.x), 0, WIDTH)
-    top     :=  clamp(min(a.y, b.y, c.y), 0, HEIGHT)
-    bottom  :=  clamp(max(a.y, b.y, c.y), 0, HEIGHT)
+    left    :=  clamp(min(a.x, b.x, c.x), 0, width)
+    right   :=  clamp(max(a.x, b.x, c.x), 0, width)
+    top     :=  clamp(min(a.y, b.y, c.y), 0, height)
+    bottom  :=  clamp(max(a.y, b.y, c.y), 0, height)
 
     for y := top; y < bottom; y += 1 {
         for x := left; x < right; x += 1 {
-            i := y*WIDTH + x
+            i := y*width + x
             yes, weights := is_inside_triangle({x, y}, a, b, c)
             //TODO: this probably is wrong but i won't be certain 'till i see the artifacts
             depth := linalg.dot(weights, [3]f32{t[0].z, t[1].z, t[2].z})
@@ -174,11 +177,11 @@ draw_triangle :: #force_inline proc(
     }
 }
 
-world_to_screen :: #force_inline proc(point: [3]f32) -> [2]i32 {
+world_to_screen :: #force_inline proc(point: [3]f32, width, height: i32) -> [2]i32 {
     height_of_view := math.tan(math.to_radians_f32(FOV) / 2) * 2
-    px_per_world_unit := f32(HEIGHT) / height_of_view / point.z
+    px_per_world_unit := f32(height) / height_of_view / point.z
 
     p := point.xy * px_per_world_unit
     
-    return {i32(p.x) + HEIGHT / 2, i32(p.y) + HEIGHT / 2}
+    return {i32(p.x) + width / 2, i32(p.y) + height / 2}
 }

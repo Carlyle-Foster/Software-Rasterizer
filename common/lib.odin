@@ -2,8 +2,6 @@ package common
 
 import "core:image"
 
-WIDTH :: 800
-HEIGHT :: 600
 FOV :: 40
 
 Image :: image.Image

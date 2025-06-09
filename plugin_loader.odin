@@ -75,7 +75,7 @@ _hot_reload_shaders :: proc(files: []os2.File_Info, optimized: bool, arena: Allo
 
             target, hit := dynlib.symbol_address(lib, "g_target")
             assert(hit)
-            (^^[WIDTH*HEIGHT]Pixel)(target)^ = &g_target
+            (^^[dynamic]Pixel)(target)^ = &g_target
 
             if name == "DEBUG" {
                 view_mode, found_view_mode := dynlib.symbol_address(lib, "g_view_mode")
