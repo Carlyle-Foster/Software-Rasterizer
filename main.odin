@@ -145,7 +145,7 @@ main :: proc() {
     defer delete(g_target)
     defer delete(g_packed_target)
 
-    hot_reload_shaders(true)
+    hot_reload_shaders(.Optimized)
     defer delete(g_shaders)
     defer for name, shader in g_shaders {
         delete(name)
@@ -212,7 +212,7 @@ main :: proc() {
 
             case .ZERO..=.SIX: g_selected_thread = int(key - .ONE)
 
-            case .R: thread.run(proc(){ hot_reload_shaders(false) }, context)
+            case .R: thread.run(proc(){ hot_reload_shaders(.Unoptimized) }, context)
 
             }
         }
