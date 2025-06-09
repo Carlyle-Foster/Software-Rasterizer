@@ -4,39 +4,27 @@ import sade "../Shaders/.current_plugin"
 
 import "core:math"
 import "core:math/linalg"
-import "core:sync"
 import "core:image"
+import "core:sync"
 
 import shaders "../Shaders/common"
+import cmn "../common"
 
-// NOTE: keep this up-to-date with `../main.odin`
-// at least until we have something better going..
-WIDTH :: 800
-HEIGHT :: 600
-FOV :: 40
+WIDTH   :: cmn.WIDTH
+HEIGHT  :: cmn.HEIGHT
+FOV     :: cmn.FOV
+
+Pixel :: cmn.Pixel
+ViewMode :: cmn.ViewMode
+Tri_3D :: cmn.Tri_3D
 
 Image :: image.Image
 
 @(export)
 g_target: ^[WIDTH*HEIGHT]Pixel
 
-Tri_3D :: struct {
-    vertices:   [3][3]f32,
-    tex_coords: [3][2]f32,
-    normals:    [3][3]f32,
-}
-
-Pixel :: struct {
-    color: [4]u8,
-    depth: f32,
-}
-
-ViewMode :: enum {
-    Standard,
-    Depth,
-    Normals,
-    Faces,
-}
+@(export)
+g_view_mode: ^ViewMode
 
 is_inside_triangle :: #force_inline proc(point, ta, tb, tc: [2]i32) -> (yes: bool, weights: [3]f32) {
     areaABP := signed_tri_area(ta, tb, point)
@@ -75,14 +63,35 @@ translate_face :: #force_inline proc(face: [3][3]f32, mtx: matrix[4, 4]f32) -> [
 }
 
 @(export)
+draw_entity :: proc(
+    faces: []Tri_3D,
+    offset: int,
+    stride: int,
+    transform: matrix[4,4]f32,
+    rotation: matrix[3, 3]f32,
+    texture: ^Image,
+) {
+    num_faces := len(faces)
+    for i := offset; i < num_faces; i += stride {
+        face := faces[i]
+        debug_color: [4]u8
+
+        when #config(debug_views, false) {
+            c := transmute([4]u8)(u32((f32(i) / f32(num_faces)) * 16_000_000))
+            debug_color = [4]u8{c.r, c.g, c.b, 255}
+        }
+        draw_triangle(face, transform, rotation, debug_color, texture, raw_data(g_target))
+    }
+}
+
 // This is thread-safe!
-draw_triangle :: proc(
+draw_triangle :: #force_inline proc(
     tri: Tri_3D,
     transform: matrix[4,4]f32,
     rotation: matrix[3, 3]f32,
     debug_color: [4]u8,
-    view_mode: ViewMode,
     texture: ^Image,
+    target: [^]Pixel,
 ) #no_bounds_check {
     t := translate_face(tri.vertices, transform)
     a := world_to_screen(t[0])
@@ -105,7 +114,7 @@ draw_triangle :: proc(
             yes, weights := is_inside_triangle({x, y}, a, b, c)
             //TODO: this probably is wrong but i won't be certain 'till i see the artifacts
             depth := linalg.dot(weights, [3]f32{t[0].z, t[1].z, t[2].z})
-            opx := g_target[i]
+            opx := target[i]
             if yes && depth < opx.depth {
                 npx := Pixel{color={255, 0, 255, 255}, depth=depth}
                 
@@ -118,26 +127,35 @@ draw_triangle :: proc(
                     tri.tex_coords[1] * weights[1] + 
                     tri.tex_coords[2] * weights[2]
 
-                switch view_mode {
-                case .Standard:
+                when #config(debug_views, false) == false {
                     normal = normal * linalg.transpose(rotation)
 
                     rgba := sade.shader(shaders.Input{normal, tex_coord, depth, texture})
 
                     rgba = linalg.vector4_linear_to_srgb(rgba)
                     npx.color.rgb = {u8(rgba.r*255), u8(rgba.g*255), u8(rgba.b*255)}
-                case .Depth:
-                    v := u8(depth/5*255)
-                    npx.color.rgb = v
-                case .Normals:
-                    n := normal / 2 + {.5, .5, .5}
-                    npx.color.rgb = [3]u8{u8(n.x*255), u8(n.y*255), u8(n.z*255)}
-                case .Faces:
-                    npx.color = debug_color
+                }
+                else { // Debug views
+                    _ :: sade
+                    _ = tex_coord
+                    
+                    switch g_view_mode^ {
+                    case .Standard:
+                        unreachable()
+                    case .Depth:
+                        v := u8(depth/5*255)
+                        npx.color.rgb = v
+                    case .Normals:
+                        n := normal / 2 + {.5, .5, .5}
+                        npx.color.rgb = [3]u8{u8(n.x*255), u8(n.y*255), u8(n.z*255)}
+                    case .Faces:
+                        npx.color = debug_color
+                    }
+
                 }
                 for {
                     opx_, ok := sync.atomic_compare_exchange_weak_explicit(
-                        cast(^u64)&g_target[i],
+                        cast(^u64)&target[i],
                         transmute(u64)opx,
                         transmute(u64)npx,
                         .Relaxed,
@@ -155,10 +173,6 @@ draw_triangle :: proc(
         }
     }
 }
-
-// shader :: proc(_: shaders.Input) -> shaders.Color {
-//     return {1, 0, 1, 1}
-// }
 
 world_to_screen :: #force_inline proc(point: [3]f32) -> [2]i32 {
     height_of_view := math.tan(math.to_radians_f32(FOV) / 2) * 2

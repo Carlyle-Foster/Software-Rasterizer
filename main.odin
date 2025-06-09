@@ -12,23 +12,15 @@ import "core:sync"
 import "core:image"
 import "core:image/png"
 import "core:dynlib"
-import "core:os/os2"
-import "core:strings"
 import "core:time"
-
-import vmem "core:mem/virtual"
-
-import "core:os"
-_ :: os
 
 import rl "vendor:raylib"
 
+import cmn "common"
 
-// NOTE: keep this up-to-date with `drawing/lib.odin`
-// at least until we have something better going..
-WIDTH :: 800
-HEIGHT :: 600
-FOV :: 40
+WIDTH   :: cmn.WIDTH
+HEIGHT  :: cmn.HEIGHT
+FOV     :: cmn.FOV
 
 Color :: [4]f32
 
@@ -55,40 +47,27 @@ g_packed_target:    [WIDTH*HEIGHT][4]u8
 
 g_shaders: map[ShaderName]Shader
 
-TriangleDrawer :: #type proc(
-    tri: Tri_3D,
+EntityDrawer :: #type proc(
+    faces: []Tri_3D,
+    offset: int,
+    stride: int,
     transform: matrix[4,4]f32,
     rotation: matrix[3, 3]f32,
-    debug_color: [4]u8,
-    view_mode: ViewMode,
     texture: ^Image,
 )
 
 Shader :: struct {
-    run: TriangleDrawer,
+    run: EntityDrawer,
     source: dynlib.Library,
     last_modified: time.Time,
 }
 
-Pixel :: struct {
-    color: [4]u8,
-    depth: f32,
-}
+Pixel :: cmn.Pixel
+Tri_3D :: cmn.Tri_3D
 
-ViewMode :: enum {
-    Standard,
-    Depth,
-    Normals,
-    Faces,
-}
+ViewMode :: cmn.ViewMode
 
 g_view_mode := ViewMode.Standard
-
-Tri_3D :: struct {
-    vertices:   [3][3]f32,
-    tex_coords: [3][2]f32,
-    normals:    [3][3]f32,
-}
 
 Model :: struct {
     faces: []Tri_3D,
@@ -132,20 +111,6 @@ get_transform_and_rotation :: proc(e: Entity) -> (transform: matrix[4, 4]f32, ro
 }
 
 g_texture: ^Image
-
-sample_texture :: #force_inline proc(tex: ^Image, tex_coord: [2]f32) -> [4]f32 {
-    tc := tex_coord
-    tc.y = 1. - tc.y
-    coord := tc - math.F32_EPSILON // Ensures it's not exactly 1
-    x := int(max(coord.x, 0) * f32(tex.width))
-    y := int(max(coord.y, 0) * f32(tex.height))
-
-    buf := cast([^][4]u8)(raw_data(tex.pixels.buf[:]))
-
-    c := buf[y*tex.width + x]
-
-    return linalg.vector4_srgb_to_linear([4]f32{f32(c.r)/255, f32(c.g)/255, f32(c.b)/255, f32(c.a)/255})
-}
 
 main :: proc() {
     when ODIN_DEBUG {
@@ -283,18 +248,16 @@ draw_entities :: proc(offset: rawptr) {
         if g_selected_thread == -1 || g_selected_thread == offset {
             for e in g_entities {
                 transform, rotation := get_transform_and_rotation(e)
-                shader := g_shaders[e.shader] or_else g_shaders["error"]
                 faces := g_models[e.model].faces
-                num_faces := len(faces)
                 stride := len(g_threads)
-    
-                // All the rendering gets done here
-                for i := offset; i < num_faces; i += stride {
-                    face := faces[i]
-                    c := transmute([4]u8)(u32((f32(i) / f32(num_faces)) * 16_000_000))
-                    debug_color := [4]u8{c.r, c.g, c.b, 255}
 
-                    shader.run(face, transform, rotation, debug_color, g_view_mode, g_texture)
+                // All the rendering gets done here
+                if g_view_mode == .Standard {
+                    shader := g_shaders[e.shader] or_else g_shaders["error"]
+                    shader.run(faces, offset, stride, transform, rotation, g_texture)
+                }
+                else {
+                    g_shaders["DEBUG"].run(faces, offset, stride, transform, rotation, g_texture)
                 }
             }
         }        
@@ -315,75 +278,4 @@ draw_entities :: proc(offset: rawptr) {
         }
         sync.wait_group_done(&g_draw_group)
     }
-}
-
-hot_reload_shaders :: proc(optimized: bool) {
-    arena_: vmem.Arena
-    arena := vmem.arena_allocator(&arena_)
-    defer free_all(arena)
-
-    files, read_dir_err := os2.read_all_directory_by_path("Shaders",  arena)
-    assert(read_dir_err == nil)
-
-    shaders := make([dynamic]os2.File_Info, allocator=arena)
-
-    for file in files {
-        name := file.name
-
-        if name == "common" || name == ".current_plugin" { continue }
-        if name not_in g_shaders {
-            append(&shaders, file)
-            continue
-        }
-        if time.diff(g_shaders[file.name].last_modified, file.modification_time) > 0 {
-            append(&shaders, file)
-        }
-    }
-    _hot_reload_shaders(shaders[:], optimized, arena)
-}
-
-_hot_reload_shaders :: proc(files: []os2.File_Info, optimized: bool, arena: Allocator) {
-    CURRENT_PLUGIN :: "Shaders/.current_plugin"
-
-    for file in files {
-        name := file.name
-
-        remove_err := os2.remove(CURRENT_PLUGIN)
-        assert(remove_err == nil || remove_err.(os2.General_Error) == .Not_Exist)
-        os2.symlink(file.fullpath, CURRENT_PLUGIN)
-
-        o := "-o:speed" if optimized else "-o:none"
-        out_path := fmt.aprintf("-out:Shaders/{}/.{}.so", name, name, allocator=arena)
-        state, _, _, exec_err := os2.process_exec(
-            {command={"odin","build","drawing",o,"-debug","-build-mode:shared",out_path}},
-            allocator=arena,
-        )
-        assert(exec_err == nil)
-        assert(state.exit_code == 0)
-        log.info("recompiled", out_path, "with", o)
-
-        if sync.mutex_guard(&g_shader_mutex) {
-            if name in g_shaders {
-                dynlib.unload_library(g_shaders[name].source)
-            } else {
-                name = strings.clone(name)
-            }
-            lib_name := fmt.aprintf("Shaders/{}/.{}.so", name, name, allocator=arena)
-            log.info("loading", lib_name)
-            lib, did_load := dynlib.load_library(lib_name)
-            assert(did_load)
-
-            addr, found := dynlib.symbol_address(lib, "draw_triangle")
-            assert(found)
-            g_shaders[name] = {run=cast(TriangleDrawer)addr, source=lib, last_modified=file.modification_time}
-
-            target, hit := dynlib.symbol_address(lib, "g_target")
-            assert(hit)
-            (^^[WIDTH*HEIGHT]Pixel)(target)^ = &g_target
-            
-            log.info("loaded shader", name)
-        }
-    }
-    if !optimized { _hot_reload_shaders(files, true, arena) }
-    log.info()
 }
