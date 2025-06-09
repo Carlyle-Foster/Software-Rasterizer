@@ -28,7 +28,10 @@ hot_reload_shaders :: proc(optimized: bool) {
             append(&shaders, file)
             continue
         }
-        if time.diff(g_shaders[file.name].last_modified, file.modification_time) > 0 {
+        plugin := fmt.aprintf("Shaders/{}/plugin.odin", name, allocator=arena)
+        plugin_info, stat_err := os2.stat(plugin, arena)
+        assert(stat_err == nil)
+        if time.diff(g_shaders[file.name].last_modified, plugin_info.modification_time) > 0 {
             append(&shaders, file)
         }
     }
@@ -48,15 +51,17 @@ _hot_reload_shaders :: proc(files: []os2.File_Info, optimized: bool, arena: Allo
         o := "-o:speed" if optimized else "-o:none"
         dbg := "-define:debug_views=true" if name == "DEBUG" else ""
         out_path := fmt.aprintf("-out:Shaders/{}/.{}.so", name, name, allocator=arena)
-        state, stdout, stderr, exec_err := os2.process_exec(
+        state, _, _, exec_err := os2.process_exec(
             {command={"odin","build","drawing",o,"-debug","-build-mode:shared",out_path, dbg}},
             allocator=arena,
         )
-        log.info(string(stdout)    )
-        log.info(string(stderr))
+        // log.info(string(stdout))
+        // log.info(string(stderr))
         assert(exec_err == nil)
         assert(state.exit_code == 0)
-        log.info("recompiled", out_path, "with", o)
+
+        lib_path := out_path[len("-out:"):]
+        log.info("recompiled", lib_path, "with", o)
 
         if sync.mutex_guard(&g_shader_mutex) {
             if name in g_shaders {
@@ -64,9 +69,7 @@ _hot_reload_shaders :: proc(files: []os2.File_Info, optimized: bool, arena: Allo
             } else {
                 name = strings.clone(name)
             }
-            lib_name := fmt.aprintf("Shaders/{}/.{}.so", name, name, allocator=arena)
-            log.info("loading", lib_name)
-            lib, did_load := dynlib.load_library(lib_name)
+            lib, did_load := dynlib.load_library(lib_path)
             assert(did_load)
 
             addr, found := dynlib.symbol_address(lib, "draw_entity")
