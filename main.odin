@@ -18,6 +18,8 @@ import rl "vendor:raylib"
 
 import cmn "common"
 
+import "obj"
+
 WIDTH   :: cmn.WIDTH
 HEIGHT  :: cmn.HEIGHT
 FOV     :: cmn.FOV
@@ -69,9 +71,7 @@ ViewMode :: cmn.ViewMode
 
 g_view_mode := ViewMode.Standard
 
-Model :: struct {
-    faces: []Tri_3D,
-}
+Model :: cmn.Model
 
 g_models: [dynamic]Model
 
@@ -146,7 +146,7 @@ main :: proc() {
         dynlib.unload_library(shader.source)
     }
 
-    model, import_ok := import_obj_file("suzanne.obj")
+    model, import_ok := obj.import_file("suzanne.obj")
     assert(import_ok)
     defer delete(model.faces)
     append(&g_models, model)

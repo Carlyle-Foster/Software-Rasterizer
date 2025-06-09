@@ -26,3 +26,6 @@ Tri_3D :: struct {
     normals:    [3][3]f32,
 }
 
+Model :: struct {
+    faces: []Tri_3D,
+}

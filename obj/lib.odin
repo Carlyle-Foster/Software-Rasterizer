@@ -1,10 +1,15 @@
-package rasterizer
+package obj
 
 import "core:os/os2"
 import "core:strings"
 import "core:strconv"
 
-import_obj_file :: proc(name: string) -> (m: Model, ok: bool) {
+import cmn "../common"
+
+Tri_3D :: cmn.Tri_3D
+Model :: cmn.Model
+
+import_file :: proc(name: string) -> (m: Model, ok: bool) {
     data, err := os2.read_entire_file_from_path(name, context.allocator)
     assert(err == nil)
     defer delete(data)
