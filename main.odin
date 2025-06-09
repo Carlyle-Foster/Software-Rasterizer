@@ -178,7 +178,7 @@ main :: proc() {
     }
 
     rl.SetTargetFPS(60)
-    rl.SetConfigFlags({.WINDOW_RESIZABLE})
+    rl.SetConfigFlags({.WINDOW_RESIZABLE, .WINDOW_TOPMOST})
     rl.InitWindow(g_width, g_height, "SoftWare Rasterizer 0.97")
     defer rl.CloseWindow()
 
@@ -209,6 +209,7 @@ main :: proc() {
             case .D: g_view_mode = .Depth
             case .N: g_view_mode = .Normals
             case .F: g_view_mode = .Faces
+            case .T: g_view_mode = .TexCoords
 
             case .ZERO..=.SIX: g_selected_thread = int(key - .ONE)
 

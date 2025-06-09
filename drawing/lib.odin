@@ -1,6 +1,7 @@
 package drawing
 
 import sade "../Shaders/.current_plugin"
+_ :: sade
 
 import "core:math"
 import "core:math/linalg"
@@ -119,7 +120,7 @@ draw_triangle :: #force_inline proc(
             depth := linalg.dot(weights, [3]f32{t[0].z, t[1].z, t[2].z})
             opx := target[i]
             if yes && depth < opx.depth {
-                npx := Pixel{color={255, 0, 255, 255}, depth=depth}
+                npx := Pixel{color={0, 0, 0, 255}, depth=depth}
                 
                 normal := 
                     tri.normals[0] * weights[0] + 
@@ -138,10 +139,7 @@ draw_triangle :: #force_inline proc(
                     rgba = linalg.vector4_linear_to_srgb(rgba)
                     npx.color.rgb = {u8(rgba.r*255), u8(rgba.g*255), u8(rgba.b*255)}
                 }
-                else { // Debug views
-                    _ :: sade
-                    _ = tex_coord
-                    
+                else { // Debug views                    
                     switch g_view_mode^ {
                     case .Standard:
                         unreachable()
@@ -153,8 +151,9 @@ draw_triangle :: #force_inline proc(
                         npx.color.rgb = [3]u8{u8(n.x*255), u8(n.y*255), u8(n.z*255)}
                     case .Faces:
                         npx.color = debug_color
+                    case .TexCoords:
+                        npx.color.rg = {u8(tex_coord.x*255), u8(tex_coord.y*255)}
                     }
-
                 }
                 for {
                     opx_, ok := sync.atomic_compare_exchange_weak_explicit(

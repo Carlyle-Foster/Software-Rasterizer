@@ -16,6 +16,7 @@ ViewMode :: enum {
     Depth,
     Normals,
     Faces,
+    TexCoords,
 }
 
 Tri_3D :: struct {
