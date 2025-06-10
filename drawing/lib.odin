@@ -1,6 +1,6 @@
 package drawing
 
-import sade "../Shaders/.current_plugin"
+import sade "plugin"
 _ :: sade
 
 import "core:math"
@@ -10,8 +10,6 @@ import "core:sync"
 
 import shaders "../Shaders/common"
 import cmn "../common"
-
-// FOV     :: cmn.FOV
 
 Pixel :: cmn.Pixel
 ViewMode :: cmn.ViewMode

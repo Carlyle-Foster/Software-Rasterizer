@@ -12,7 +12,6 @@ import "core:sync"
 import "core:image"
 import "core:image/png"
 import "core:dynlib"
-import "core:time"
 
 import rl "vendor:raylib"
 
@@ -67,7 +66,6 @@ EntityDrawer :: #type proc(
 Shader :: struct {
     run: EntityDrawer,
     source: dynlib.Library,
-    last_modified: time.Time,
 }
 
 Pixel :: cmn.Pixel
@@ -147,7 +145,7 @@ main :: proc() {
     defer delete(g_target)
     defer delete(g_packed_target)
 
-    hot_reload_shaders(.Optimized)
+    hot_reload_shaders(.Bootstrap)
     defer delete(g_shaders)
     defer for name, shader in g_shaders {
         delete(name)
@@ -218,7 +216,7 @@ main :: proc() {
 
             case .ZERO..=.SIX: g_selected_thread = int(key - .ONE)
 
-            case .R: thread.run(proc(){ hot_reload_shaders(.Unoptimized) }, context)
+            case .R: hot_reload_shaders(.Unoptimized)
 
             }
         }
