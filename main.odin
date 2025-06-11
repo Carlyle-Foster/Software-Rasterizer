@@ -145,7 +145,7 @@ main :: proc() {
     defer delete(g_target)
     defer delete(g_packed_target)
 
-    hot_reload_shaders(.Bootstrap)
+    hot_reload_shaders(optimized=true)
     defer delete(g_shaders)
     defer for name, shader in g_shaders {
         delete(name)
@@ -175,6 +175,12 @@ main :: proc() {
             thread.terminate(t, 0)
             thread.destroy(t)
         }
+    }
+
+    watcher := thread.create_and_start(watcher_proc, context)
+    defer {
+        thread.terminate(watcher, 0)
+        thread.destroy(watcher)
     }
 
     rl.SetTargetFPS(60)
@@ -215,9 +221,6 @@ main :: proc() {
             case .DOWN: g_fov   -= 3 if rl.IsKeyDown(.LEFT_CONTROL) else 10
 
             case .ZERO..=.SIX: g_selected_thread = int(key - .ONE)
-
-            case .R: hot_reload_shaders(.Unoptimized)
-
             }
         }
         for &px in g_target {
