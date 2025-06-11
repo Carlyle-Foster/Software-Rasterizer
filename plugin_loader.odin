@@ -12,7 +12,7 @@ import "core:mem"
 
 import vmem "core:mem/virtual" 
 
-dynlib_extension := fmt.aprintf(".{}", dynlib.LIBRARY_FILE_EXTENSION)
+dynlib_extension ::"." + dynlib.LIBRARY_FILE_EXTENSION
 
 watcher_proc :: proc() {
     arena: vmem.Arena
@@ -102,7 +102,7 @@ hot_reload_shader :: proc(name: string, optimized: bool) {
         dbg := "-define:debug_views=true" if name == "_debug_views" else ""
         output := fmt.tprintf("-out:shaders/{}/.{}{}", name, name, dynlib_extension)
         state, _, stderr, exec_err := os2.process_exec(
-            {command={"odin","build",temp_file,"-file","-debug","-build-mode:shared",output,dbg,o}},
+            {command={"odin","build",temp_file,"-file","-debug","-build-mode:shared","-linker:lld",output,dbg,o}},
             allocator=tmp,
         )
         if exec_err != nil {
