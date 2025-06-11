@@ -12,7 +12,7 @@ import "core:mem"
 
 import vmem "core:mem/virtual" 
 
-dynlib_extension ::"." + dynlib.LIBRARY_FILE_EXTENSION
+DYNLIB_EXTENSION :: "." + dynlib.LIBRARY_FILE_EXTENSION
 
 watcher_proc :: proc() {
     arena: vmem.Arena
@@ -41,19 +41,17 @@ hot_reload_shaders :: proc(optimized: bool) {
 
         if strings.starts_with(name, ".") { continue }
 
+        plugin_files, read_plugin_err := os2.read_all_directory_by_path(file.fullpath, tmp)
+        if read_plugin_err != nil { continue }
+
         src_last_modified: time.Time
         binary_last_modified: time.Time
-        plugin_files, read_plugin_err := os2.read_all_directory_by_path(file.fullpath, tmp)
-        if read_plugin_err != nil {
-            error_file := fmt.tprintf("shaders/watcher_failed_to_read_{}", name)
-            _, _ = os2.open(error_file, {.Create})
-            continue
-        }
+        
         for f in plugin_files {
             if strings.ends_with(f.name, ".odin") {
                 src_last_modified = time.Time{max(src_last_modified._nsec, f.modification_time._nsec)}
             }
-            else if strings.ends_with(f.name, dynlib_extension) {
+            else if strings.ends_with(f.name, DYNLIB_EXTENSION) {
                 binary_last_modified = time.Time{max(binary_last_modified._nsec, f.modification_time._nsec)}
             }
         }
@@ -100,7 +98,7 @@ hot_reload_shader :: proc(name: string, optimized: bool) {
     for {
         o := "-o:speed" if optimized else "-o:none"
         dbg := "-define:debug_views=true" if name == "_debug_views" else ""
-        output := fmt.tprintf("-out:shaders/{}/.{}{}", name, name, dynlib_extension)
+        output := fmt.tprintf("-out:shaders/{}/.{}{}", name, name, DYNLIB_EXTENSION)
         state, _, stderr, exec_err := os2.process_exec(
             {command={"odin","build",temp_file,"-file","-debug","-build-mode:shared","-linker:lld",output,dbg,o}},
             allocator=tmp,
@@ -115,17 +113,20 @@ hot_reload_shader :: proc(name: string, optimized: bool) {
             fmt.println("END_COMPILER_TALK")
         }
         if exec_err != nil || state.exit_code != 0 {
-            dummy := fmt.tprintf("shaders/{}/.dummy{}", name, dynlib_extension)
+            dummy := fmt.tprintf("shaders/{}/.dummy{}", name, DYNLIB_EXTENSION)
             _, _ = os2.open(dummy, {.Create})
         }
         log.infof("recompiled shaders/{}, with {}", name, o)
-        lib_path := output[len("-out:"):]
+
         if sync.mutex_guard(&g_shader_mutex) {
             if name in g_shaders {
                 dynlib.unload_library(g_shaders[name].source)
             } else {
                 name = strings.clone(name)
             }
+
+            lib_path := output[len("-out:"):]
+
             lib, did_load := dynlib.load_library(lib_path)
             assert(did_load)
     
@@ -148,6 +149,7 @@ hot_reload_shader :: proc(name: string, optimized: bool) {
                 assert(found_view_mode)
                 (^^ViewMode)(view_mode)^ = &g_view_mode
             }
+
             log.info("loaded shader", name)
         }
         if !optimized { optimized = true }
