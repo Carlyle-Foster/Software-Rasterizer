@@ -8,6 +8,7 @@ import "core:os/os2"
 import "core:strings"
 import "core:time"
 import "core:thread"
+import "core:mem"
 
 import vmem "core:mem/virtual"
 
@@ -79,23 +80,24 @@ hot_reload_shader :: proc(file: ^os2.File_Info, style: ReloadStyle) {
         return
     }
 
-    // if any of this fails the odin compiler will catch it
-    temp_dir := fmt.tprintf("shaders/.{}_temp", name)
+    temp_file := fmt.tprintf("shaders/.{}_temp.odin", name)
 
-    os2.make_directory(temp_dir)
-    os2.make_directory(fmt.tprint(temp_dir, "standard", sep="/"))
-    os2.make_directory(fmt.tprint(temp_dir, "_internals", sep="/"))
-    os2.make_directory(fmt.tprint(temp_dir, "_externals", sep="/"))
-
-    for pf in plugin_files {
-        if strings.ends_with(pf.name, ".odin") {
-            os2.link(pf.fullpath, fmt.tprint(temp_dir, "standard", pf.name, sep="/"))
-        }
+    data, read_err := os2.read_entire_file_from_path("shaders/lib.odin", tmp)
+    if read_err != nil {
+        log.errorf("failed to read shaders/lib.odin because of Error: {}", os2.error_string(read_err))
     }
-    os2.link("shaders/lib.odin", fmt.tprint(temp_dir, "lib.odin", sep="/"))
-    os2.link("shaders/_internals/lib.odin", fmt.tprint(temp_dir, "_internals/lib.odin", sep="/"))
-    os2.link("shaders/_externals/lib.odin", fmt.tprint(temp_dir, "_externals/lib.odin", sep="/"))
-    defer os2.remove_all(temp_dir)
+
+    head := strings.index(string(data), "standard\"//")
+    assert(head != -1)
+
+    patch := fmt.tprint(name, strings.repeat("/", 8, tmp), sep="\"")
+    mem.copy(raw_data(data[head:]), raw_data(patch), len(patch))
+
+    write_err := os2.write_entire_file(temp_file, data)
+    if write_err != nil {
+        log.errorf("failed to write {} because of Error: {}", temp_file, os2.error_string(write_err))
+    }
+    defer os2.remove(temp_file)
 
     for {
         o := "-o:none" if style == .Unoptimized else "-o:speed"
@@ -103,7 +105,7 @@ hot_reload_shader :: proc(file: ^os2.File_Info, style: ReloadStyle) {
         output := fmt.tprintf("-out:shaders/{}/.{}{}", name, name, dynlib_extension)
         if needs_recompile {
             state, _, stderr, exec_err := os2.process_exec(
-                {command={"odin","build",temp_dir,o,"-debug","-build-mode:shared",output, dbg}},
+                {command={"odin","build",temp_file,"-file","-debug","-build-mode:shared",output,dbg,o}},
                 allocator=tmp,
             )
             if exec_err != nil {
