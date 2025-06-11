@@ -71,10 +71,6 @@ Shader :: struct {
 Pixel :: cmn.Pixel
 Tri_3D :: cmn.Tri_3D
 
-ViewMode :: cmn.ViewMode
-
-g_view_mode := ViewMode.Standard
-
 Model :: cmn.Model
 
 g_models: [dynamic]Model
@@ -211,11 +207,11 @@ main :: proc() {
 
         for key := rl.GetKeyPressed(); key != .KEY_NULL; key = rl.GetKeyPressed() {
             #partial switch key {
-            case .S: g_view_mode = .Standard
-            case .D: g_view_mode = .Depth
-            case .N: g_view_mode = .Normals
-            case .F: g_view_mode = .Faces
-            case .T: g_view_mode = .TexCoords
+            case .S: g_entities[0].shader = "standard"
+            case .D: g_entities[0].shader = "_depth"
+            case .N: g_entities[0].shader = "_normals"
+            case .F: g_entities[0].shader = "_faces"
+            case .T: g_entities[0].shader = "_tex_coords"
 
             case .UP: g_fov     += 3 if rl.IsKeyDown(.LEFT_CONTROL) else 10
             case .DOWN: g_fov   -= 3 if rl.IsKeyDown(.LEFT_CONTROL) else 10
@@ -276,12 +272,7 @@ draw_entities :: proc(offset: rawptr) {
                 faces := g_models[e.model].faces
                 transform, rotation := get_transform_and_rotation(e)
                 stride := len(g_threads)
-                shader: Shader
-                if g_view_mode == .Standard {
-                    shader = g_shaders[e.shader] or_else g_shaders["error"]
-                } else {
-                    shader = g_shaders["_debug_views"]
-                }
+                shader := g_shaders[e.shader] or_else g_shaders["error"]
                 // All the rendering gets done here
                 shader.run(
                     faces,

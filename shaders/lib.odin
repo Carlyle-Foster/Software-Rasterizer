@@ -12,16 +12,12 @@ import shaders  "_internals"
 import cmn      "_externals"
 
 Pixel :: cmn.Pixel
-ViewMode :: cmn.ViewMode
 Tri_3D :: cmn.Tri_3D
 
 Image :: image.Image
 
 @(export)
 g_target: ^[dynamic]Pixel
-
-@(export)
-g_view_mode: ^ViewMode
 
 g_height_of_view: f32
 
@@ -137,27 +133,14 @@ draw_triangle :: #force_inline proc(
                 when #config(debug_views, false) == false {
                     normal = normal * linalg.transpose(rotation)
 
-                    rgba := sade.shader(shaders.Input{normal, tex_coord, depth, texture})
+                    rgba := sade.shader(shaders.Input{normal, tex_coord, depth, texture, debug_color})
 
                     rgba = linalg.vector4_linear_to_srgb(rgba)
-                    npx.color.rgb = {u8(rgba.r*255), u8(rgba.g*255), u8(rgba.b*255)}
                 }
-                else { // Debug views                    
-                    switch g_view_mode^ {
-                    case .Standard:
-                        unreachable()
-                    case .Depth:
-                        v := u8(depth/5*255)
-                        npx.color.rgb = v
-                    case .Normals:
-                        n := normal / 2 + {.5, .5, .5}
-                        npx.color.rgb = [3]u8{u8(n.x*255), u8(n.y*255), u8(n.z*255)}
-                    case .Faces:
-                        npx.color = debug_color
-                    case .TexCoords:
-                        npx.color.rg = {u8(tex_coord.x*255), u8(tex_coord.y*255)}
-                    }
+                else {
+                    rgba := sade.shader(shaders.Input{normal, tex_coord, depth, texture, debug_color})
                 }
+                npx.color.rgb = {u8(rgba.r*255), u8(rgba.g*255), u8(rgba.b*255)}
                 for {
                     opx_, ok := sync.atomic_compare_exchange_weak_explicit(
                         cast(^u64)&target[i],

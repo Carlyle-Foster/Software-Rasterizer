@@ -46,24 +46,29 @@ hot_reload_shaders :: proc(optimized: bool) {
 
         src_last_modified: time.Time
         binary_last_modified: time.Time
-        
+
+        last_recompile_failed := false
         for f in plugin_files {
             if strings.ends_with(f.name, ".odin") {
                 src_last_modified = time.Time{max(src_last_modified._nsec, f.modification_time._nsec)}
             }
             else if strings.ends_with(f.name, DYNLIB_EXTENSION) {
+                if strings.starts_with(f.name, "._dummy") { last_recompile_failed = true }
+
                 binary_last_modified = time.Time{max(binary_last_modified._nsec, f.modification_time._nsec)}
             }
         }
 
         needs_recompile := binary_last_modified == {} || time.diff(binary_last_modified, src_last_modified) > 0
 
-        if name not_in g_shaders || needs_recompile {
+        if needs_recompile || (name not_in g_shaders && !last_recompile_failed) {
             t := thread.create_and_start_with_poly_data2(name, optimized,
                 hot_reload_shader,
                 context,
                 self_cleanup=true,
             )
+            //TODO: why is this log necessary?!!
+            log.info("hello", name)
             append(&threads, t)
         }
     }
@@ -97,7 +102,7 @@ hot_reload_shader :: proc(name: string, optimized: bool) {
 
     for {
         o := "-o:speed" if optimized else "-o:none"
-        dbg := "-define:debug_views=true" if name == "_debug_views" else ""
+        dbg := "-define:debug_views=true" if name[0] == '_' else ""
         output := fmt.tprintf("-out:shaders/{}/.{}{}", name, name, DYNLIB_EXTENSION)
         state, _, stderr, exec_err := os2.process_exec(
             {command={"odin","build",temp_file,"-file","-debug","-build-mode:shared","-linker:lld",output,dbg,o}},
@@ -112,10 +117,16 @@ hot_reload_shader :: proc(name: string, optimized: bool) {
             fmt.print(string(stderr))
             fmt.println("END_COMPILER_TALK")
         }
+
+        dummy := fmt.tprintf("shaders/{}/._dummy{}", name, DYNLIB_EXTENSION)
+
         if exec_err != nil || state.exit_code != 0 {
-            dummy := fmt.tprintf("shaders/{}/.dummy{}", name, DYNLIB_EXTENSION)
             _, _ = os2.open(dummy, {.Create})
+            return
+        } else {
+            _ = os2.remove(dummy)
         }
+
         log.infof("recompiled shaders/{}, with {}", name, o)
 
         if sync.mutex_guard(&g_shader_mutex) {
@@ -143,12 +154,6 @@ hot_reload_shader :: proc(name: string, optimized: bool) {
                 return
             }
             g_shaders[name] = {run=cast(EntityDrawer)addr, source=lib}
-    
-            if name == "_debug_views" {
-                view_mode, found_view_mode := dynlib.symbol_address(lib, "g_view_mode")
-                assert(found_view_mode)
-                (^^ViewMode)(view_mode)^ = &g_view_mode
-            }
 
             log.info("loaded shader", name)
         }

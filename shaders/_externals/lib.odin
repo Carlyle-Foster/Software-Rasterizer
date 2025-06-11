@@ -9,14 +9,6 @@ Pixel :: struct {
     depth: f32,
 }
 
-ViewMode :: enum {
-    Standard,
-    Depth,
-    Normals,
-    Faces,
-    TexCoords,
-}
-
 Tri_3D :: struct {
     vertices:   [3][3]f32,
     tex_coords: [3][2]f32,

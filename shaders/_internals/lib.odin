@@ -13,6 +13,7 @@ Input :: struct {
     tex_coord: [2]f32,
     depth: f32,
     texture: ^Image,
+    debug_color: [4]u8,
 }
 
 Image :: image.Image
