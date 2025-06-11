@@ -1,6 +1,6 @@
 package error
 
-import shaders "../common"
+import shaders "../_internals"
 
 shader :: proc(_: shaders.Input) -> shaders.Color {
     return {1, 0, 1, 1}

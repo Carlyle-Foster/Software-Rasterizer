@@ -4,7 +4,7 @@ import "core:os/os2"
 import "core:strings"
 import "core:strconv"
 
-import cmn "../common"
+import cmn "../Shaders/_externals"
 
 Tri_3D :: cmn.Tri_3D
 Model :: cmn.Model

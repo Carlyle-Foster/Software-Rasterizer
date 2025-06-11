@@ -15,7 +15,7 @@ import "core:dynlib"
 
 import rl "vendor:raylib"
 
-import cmn "common"
+import cmn "Shaders/_externals"
 
 import "obj"
 

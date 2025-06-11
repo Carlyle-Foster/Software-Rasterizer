@@ -26,7 +26,10 @@ hot_reload_shaders :: proc(style: ReloadStyle) -> (err: os2.General_Error) {
     for &file in files {
         name := file.name
 
-        if name == "common" { continue }
+        if name == "lib.odin" { continue }
+
+        if strings.starts_with(name, "_") { continue }
+        if strings.starts_with(name, ".") { continue }
 
         t := thread.create_and_start_with_poly_data2(&file, style,
             hot_reload_shader,
@@ -51,17 +54,17 @@ hot_reload_shader :: proc(file: ^os2.File_Info, style: ReloadStyle) {
     tmp := context.temp_allocator
 
     name := strings.clone(file.name, tmp)
-    handle, open_err := os2.open(file.fullpath)
-    if open_err != nil {
-        log.errorf("failed to open file Shaders/{}", name)
-    }
 
     dynlib_extension := fmt.tprintf(".{}", dynlib.LIBRARY_FILE_EXTENSION)
 
     binary: os2.File_Info
     src_last_modified: time.Time
-    it := os2.read_directory_iterator_create(handle)
-    for f in os2.read_directory_iterator(&it) {
+    plugin_files, read_dir_err := os2.read_all_directory_by_path(file.fullpath, tmp)
+    if read_dir_err != nil {
+        log.errorf("failed to read directory Shaders/{} because of Error: {}", file.name, os2.error_string(read_dir_err))
+        return
+    }
+    for f in plugin_files {
         if strings.ends_with(f.name, ".odin") {
             src_last_modified = time.Time{max(src_last_modified._nsec, f.modification_time._nsec)}
         }
@@ -77,16 +80,27 @@ hot_reload_shader :: proc(file: ^os2.File_Info, style: ReloadStyle) {
         return
     }
 
-    temp_dir := fmt.tprintf(".{}_temp", name)
-    // if any of these fail the odin compiler will catch it
+    // if any of this fails the odin compiler will catch it
+    temp_dir := fmt.tprintf("Shaders/.{}_temp", name)
+
     os2.make_directory(temp_dir)
-    os2.symlink(fmt.tprintf("../Shaders/{}", name), fmt.tprintf("{}/plugin", temp_dir))
-    os2.link("drawing/lib.odin", fmt.tprintf("{}/drawing.odin", temp_dir))
+    os2.make_directory(fmt.tprint(temp_dir, "standard", sep="/"))
+    os2.make_directory(fmt.tprint(temp_dir, "_internals", sep="/"))
+    os2.make_directory(fmt.tprint(temp_dir, "_externals", sep="/"))
+
+    for pf in plugin_files {
+        if strings.ends_with(pf.name, ".odin") {
+            os2.link(pf.fullpath, fmt.tprint(temp_dir, "standard", pf.name, sep="/"))
+        }
+    }
+    os2.link("Shaders/lib.odin", fmt.tprint(temp_dir, "lib.odin", sep="/"))
+    os2.link("Shaders/_internals/lib.odin", fmt.tprint(temp_dir, "_internals/lib.odin", sep="/"))
+    os2.link("Shaders/_externals/lib.odin", fmt.tprint(temp_dir, "_externals/lib.odin", sep="/"))
     defer os2.remove_all(temp_dir)
 
     for {
         o := "-o:none" if style == .Unoptimized else "-o:speed"
-        dbg := "-define:debug_views=true" if name == "DEBUG" else ""
+        dbg := "-define:debug_views=true" if name == "_debug_views" else ""
         output := fmt.tprintf("-out:Shaders/{}/.{}{}", name, name, dynlib_extension)
         if needs_recompile {
             state, _, stderr, exec_err := os2.process_exec(

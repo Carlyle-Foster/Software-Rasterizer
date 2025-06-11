@@ -1,6 +1,6 @@
 package __debug
 
-import shaders "../common"
+import shaders "../_internals"
 
 shader :: proc(_: shaders.Input) -> shaders.Color {
     unreachable()

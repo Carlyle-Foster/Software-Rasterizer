@@ -1,6 +1,6 @@
 package drawing
 
-import sade "plugin"
+import sade "standard"
 _ :: sade
 
 import "core:math"
@@ -8,8 +8,8 @@ import "core:math/linalg"
 import "core:image"
 import "core:sync"
 
-import shaders "../Shaders/common"
-import cmn "../common"
+import shaders  "_internals"
+import cmn      "_externals"
 
 Pixel :: cmn.Pixel
 ViewMode :: cmn.ViewMode
