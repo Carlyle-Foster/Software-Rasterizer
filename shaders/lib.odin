@@ -1,4 +1,4 @@
-package drawing
+package shaders
 
 import sade "standard"
 _ :: sade

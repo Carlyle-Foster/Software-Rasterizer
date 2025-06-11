@@ -15,7 +15,7 @@ import "core:dynlib"
 
 import rl "vendor:raylib"
 
-import cmn "Shaders/_externals"
+import cmn "shaders/_externals"
 
 import "obj"
 
@@ -277,7 +277,7 @@ draw_entities :: proc(offset: rawptr) {
                 if g_view_mode == .Standard {
                     shader = g_shaders[e.shader] or_else g_shaders["error"]
                 } else {
-                    shader = g_shaders["DEBUG"]
+                    shader = g_shaders["_debug_views"]
                 }
                 // All the rendering gets done here
                 shader.run(
