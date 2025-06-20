@@ -1,5 +1,5 @@
 #!/bin/sh
 
-odin build . -vet -debug -linker:lld $1
+odin build source -out:rasterizer -vet -debug -linker:lld $@
 
 gdb rasterizer -ex run

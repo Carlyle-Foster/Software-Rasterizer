@@ -4,3 +4,4 @@ rasterizer
 *.so
 *.dll
 *.dylib
+*.bin
