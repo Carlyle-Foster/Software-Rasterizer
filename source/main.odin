@@ -121,18 +121,14 @@ main :: proc() {
         .Line,
     })
     defer log.destroy_console_logger(context.logger)
+    defer delete_globals()
 
     hot_reload_shaders(optimized=true)
-    defer delete(g_shaders)
-    defer for name, shader in g_shaders {
-        delete(name)
-        dynlib.unload_library(shader.source)
-    }
 
     model, import_ok := obj.import_file("3D models/suzanne.obj")
     assert(import_ok)
-    defer delete(model.faces)
     append(&g_models, model)
+    defer delete(model.faces)
 
     ent := create_entity(0, {0, 0, 7}, 1, "standard")
     ent.yaw = math.PI
@@ -147,19 +143,14 @@ main :: proc() {
     for &t, i in g_threads {
         t = thread.create_and_start_with_data(rawptr(uintptr(i)), draw_entities, context)
     }
-    defer {
-        for t in g_threads {
-            thread.terminate(t, 0)
-            thread.destroy(t)
-        }
-    }
 
     watcher := thread.create_and_start(watcher_proc, context)
     defer {
-        thread.terminate(watcher, 0)
+        sync.atomic_store(&g_should_watch, false)
+        thread.join(watcher)
         thread.destroy(watcher)
     }
-
+    
     rl.SetTargetFPS(60)
     rl.SetConfigFlags({.WINDOW_RESIZABLE, .WINDOW_TOPMOST})
     rl.InitWindow(g_width, g_height, "SoftWare Rasterizer 0.97")
@@ -228,11 +219,7 @@ main :: proc() {
             e.yaw += 0.02 * s
         }
         free_all(context.temp_allocator)
-    }
-    delete(g_models)
-    delete(g_entities)
-    delete(g_target)
-    delete(g_packed_target)
+    }    
 }
 
 draw_entities :: proc(offset: rawptr) {
@@ -286,4 +273,21 @@ draw_entities :: proc(offset: rawptr) {
         }
         sync.wait_group_done(&g_draw_group)
     }
+}
+
+delete_globals :: proc() {
+    for t in g_threads {
+        thread.terminate(t, 0)
+        thread.destroy(t)
+    }
+    for name, shader in g_shaders {
+        delete(name)
+        dynlib.unload_library(shader.source)
+    }
+    delete(g_shaders)
+    
+    delete(g_models)
+    delete(g_entities)
+    delete(g_target)
+    delete(g_packed_target)
 }

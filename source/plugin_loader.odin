@@ -11,7 +11,9 @@ import "core:thread"
 import "core:mem"
 import "core:path/filepath"
 
-import vmem "core:mem/virtual" 
+import vmem "core:mem/virtual"
+
+g_should_watch := true
 
 Time :: time.Time
 Millisecond :: time.Millisecond
@@ -22,7 +24,7 @@ watcher_proc :: proc() {
     arena: vmem.Arena
     context.temp_allocator = vmem.arena_allocator(&arena)
 
-    for {
+    for sync.atomic_load(&g_should_watch) {
         hot_reload_shaders(optimized=false)
 
         free_all(context.temp_allocator)
