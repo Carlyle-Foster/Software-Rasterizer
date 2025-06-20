@@ -11,11 +11,10 @@ import "core:thread"
 import "core:mem"
 import "core:path/filepath"
 
-import "thread2"
-
 import vmem "core:mem/virtual" 
 
 Time :: time.Time
+Millisecond :: time.Millisecond
 
 DYNLIB_EXTENSION :: "." + dynlib.LIBRARY_FILE_EXTENSION
 
@@ -24,13 +23,11 @@ watcher_proc :: proc() {
     context.temp_allocator = vmem.arena_allocator(&arena)
 
     for {
-        // start := time.now()
         hot_reload_shaders(optimized=false)
 
         free_all(context.temp_allocator)
 
-        // log.info("checked time", time.since(start))
-        time.sleep(40 * time.Millisecond)
+        time.sleep(40 * Millisecond)
     }
 }
 
@@ -52,8 +49,8 @@ hot_reload_shaders :: proc(optimized: bool) {
         plugin_files, read_plugin_err := os2.read_all_directory_by_path(file.fullpath, tmp)
         if read_plugin_err != nil { continue }
 
-        src_last_modified: time.Time
-        binary_last_modified: time.Time
+        src_last_modified: Time
+        binary_last_modified: Time
 
         last_recompile_failed := false
         for f in plugin_files {
@@ -73,7 +70,7 @@ hot_reload_shaders :: proc(optimized: bool) {
         needs_recompile := binary_last_modified == {} || time.diff(binary_last_modified, src_last_modified) > 0
 
         if needs_recompile || (name not_in g_shaders && !last_recompile_failed) {
-            t := thread2.create_and_start_with_poly_data2(name, optimized,
+            t := thread.create_and_start_with_poly_data2(name, optimized,
                 hot_reload_shader,
                 context,
                 self_cleanup=true,
@@ -83,18 +80,10 @@ hot_reload_shaders :: proc(optimized: bool) {
             append(&threads, t)
         }
     }
-    //TODO: why is waiting here necessary?!!
-    sum := 0
-    for i in 0..<1_000_000 {
-        sum += i
-    }
-    // if len(threads) > 0 {
-    //     _ = 2
-    // }
+    //NOTE: this is a workaround for a bug in "core:threads", see https://github.com/odin-lang/Odin/issues/3924
+    if len(threads) > 0 { time.sleep(Millisecond) }
+
     thread.join_multiple(..threads[:])
-    if len(threads) > 0 {
-        fmt.println(sum)
-    }
 }
 
 hot_reload_shader :: proc(name: string, optimized: bool) {
