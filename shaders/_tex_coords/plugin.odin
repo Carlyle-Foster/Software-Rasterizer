@@ -1,4 +1,4 @@
-package _normals
+package _tex_coords
 
 import shaders "../_internals"
 

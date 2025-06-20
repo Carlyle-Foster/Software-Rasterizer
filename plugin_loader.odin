@@ -9,26 +9,34 @@ import "core:strings"
 import "core:time"
 import "core:thread"
 import "core:mem"
+import "core:path/filepath"
+
+import "thread2"
 
 import vmem "core:mem/virtual" 
+
+Time :: time.Time
 
 DYNLIB_EXTENSION :: "." + dynlib.LIBRARY_FILE_EXTENSION
 
 watcher_proc :: proc() {
     arena: vmem.Arena
-    tmp := vmem.arena_allocator(&arena)
+    context.temp_allocator = vmem.arena_allocator(&arena)
+
     for {
+        // start := time.now()
         hot_reload_shaders(optimized=false)
 
-        free_all(tmp)
+        free_all(context.temp_allocator)
 
+        // log.info("checked time", time.since(start))
         time.sleep(40 * time.Millisecond)
     }
 }
 
 hot_reload_shaders :: proc(optimized: bool) {
     tmp := context.temp_allocator
-
+    
     files, read_dir_err := os2.read_all_directory_by_path("shaders",  tmp)
     assert(read_dir_err == nil)
 
@@ -49,30 +57,44 @@ hot_reload_shaders :: proc(optimized: bool) {
 
         last_recompile_failed := false
         for f in plugin_files {
-            if strings.ends_with(f.name, ".odin") {
-                src_last_modified = time.Time{max(src_last_modified._nsec, f.modification_time._nsec)}
+            extension := filepath.ext(f.name)
+            
+            if extension == ".odin" {
+                src_last_modified = Time{max(src_last_modified._nsec, f.modification_time._nsec)}
             }
-            else if strings.ends_with(f.name, DYNLIB_EXTENSION) {
-                if strings.starts_with(f.name, "._dummy") { last_recompile_failed = true }
-
-                binary_last_modified = time.Time{max(binary_last_modified._nsec, f.modification_time._nsec)}
+            else if extension == DYNLIB_EXTENSION {
+                if f.name == ("._dummy" + DYNLIB_EXTENSION) {
+                    last_recompile_failed = true
+                }
+                binary_last_modified = Time{max(binary_last_modified._nsec, f.modification_time._nsec)}
             }
         }
 
         needs_recompile := binary_last_modified == {} || time.diff(binary_last_modified, src_last_modified) > 0
 
         if needs_recompile || (name not_in g_shaders && !last_recompile_failed) {
-            t := thread.create_and_start_with_poly_data2(name, optimized,
+            t := thread2.create_and_start_with_poly_data2(name, optimized,
                 hot_reload_shader,
                 context,
                 self_cleanup=true,
             )
-            //TODO: why is this log necessary?!!
-            log.info("hello", name)
+            assert(t != nil)
+            
             append(&threads, t)
         }
     }
+    //TODO: why is waiting here necessary?!!
+    sum := 0
+    for i in 0..<1_000_000 {
+        sum += i
+    }
+    // if len(threads) > 0 {
+    //     _ = 2
+    // }
     thread.join_multiple(..threads[:])
+    if len(threads) > 0 {
+        fmt.println(sum)
+    }
 }
 
 hot_reload_shader :: proc(name: string, optimized: bool) {
@@ -104,6 +126,7 @@ hot_reload_shader :: proc(name: string, optimized: bool) {
         o := "-o:speed" if optimized else "-o:none"
         dbg := "-define:debug_views=true" if name[0] == '_' else ""
         output := fmt.tprintf("-out:shaders/{}/.{}{}", name, name, DYNLIB_EXTENSION)
+
         state, _, stderr, exec_err := os2.process_exec(
             {command={"odin","build",temp_file,"-file","-debug","-build-mode:shared","-linker:lld",output,dbg,o}},
             allocator=tmp,
@@ -121,7 +144,7 @@ hot_reload_shader :: proc(name: string, optimized: bool) {
         dummy := fmt.tprintf("shaders/{}/._dummy{}", name, DYNLIB_EXTENSION)
 
         if exec_err != nil || state.exit_code != 0 {
-            _, _ = os2.open(dummy, {.Create})
+            _, _ = os2.open(dummy, {.Create, .Trunc})
             return
         } else {
             _ = os2.remove(dummy)
