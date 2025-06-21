@@ -20,9 +20,23 @@ Millisecond :: time.Millisecond
 
 DYNLIB_EXTENSION :: "." + dynlib.LIBRARY_FILE_EXTENSION
 
+g_lld_supported := false
+
+@(init)
+check_for_lld_support :: proc() {
+    lld := "lld.exe" when ODIN_OS == .Windows else "lld"
+    _, _, _, exec_err := os2.process_exec({command={lld}}, context.temp_allocator)
+
+    if exec_err == nil {
+        g_lld_supported = true
+    }
+}
+
 watcher_proc :: proc() {
     arena: vmem.Arena
     context.temp_allocator = vmem.arena_allocator(&arena)
+
+    log.info("SUPPORTS LLD:", g_lld_supported)
 
     for sync.atomic_load(&g_should_watch) {
         hot_reload_shaders(optimized=false)
@@ -121,9 +135,10 @@ hot_reload_shader :: proc(name: string, optimized: bool) {
         o := "-o:speed" if optimized else "-o:none"
         dbg := "-define:debug_views=true" if name[0] == '_' else ""
         output := fmt.tprintf("-out:{}/.{}{}", name, name, DYNLIB_EXTENSION)
+        linker := "-linker:lld" if g_lld_supported else "-linker:default"
 
         state, _, stderr, exec_err := os2.process_exec(
-            {command={"odin","build",temp_file,"-file","-debug","-build-mode:shared","-linker:lld",output,dbg,o}},
+            {command={"odin","build",temp_file,"-file","-debug","-build-mode:shared",linker,output,dbg,o}},
             allocator=tmp,
         )
         if exec_err != nil {
