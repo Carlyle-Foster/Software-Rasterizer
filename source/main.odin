@@ -10,6 +10,9 @@ import "core:sync"
 import "core:image"
 import "core:image/png"
 import "core:dynlib"
+import "core:os/os2"
+import "core:strings"
+import "core:path/filepath"
 
 import rl "vendor:raylib"
 
@@ -71,10 +74,10 @@ Tri_3D :: cmn.Tri_3D
 
 Model :: cmn.Model
 
-g_models: [dynamic]Model
+g_models: map[string]Model
 
 Entity :: struct {
-    model: int,
+    model: string,
     position: [3]f32,
     scale: f32,
     yaw: f32,
@@ -85,7 +88,7 @@ Entity :: struct {
 
 g_entities: [dynamic]Entity
 
-create_entity :: proc(model: int, position: [3]f32, scale: f32, shader: ShaderName) -> Entity {
+create_entity :: proc(model: string, position: [3]f32, scale: f32, shader: ShaderName) -> Entity {
     return {
         model=model,
         position=position,
@@ -110,6 +113,21 @@ get_transform_and_rotation :: proc(e: Entity) -> (transform: matrix[4, 4]f32, ro
 
 g_texture: ^Image
 
+load_models :: proc() {
+    files, read_dir_error := os2.read_all_directory_by_path("3D models", context.temp_allocator)
+    assert(read_dir_error == nil)
+
+    for f in files {
+        model, import_ok := obj.import_file(f.fullpath)
+        if !import_ok {
+            log.errorf("failed to import '3D models/{}'", f.name)
+        }
+        name := strings.clone(filepath.short_stem(f.name))
+
+        g_models[name] = model
+    }
+}
+
 main :: proc() {
     when ODIN_DEBUG {
         context.allocator = g_tracking_allocator
@@ -125,15 +143,14 @@ main :: proc() {
 
     hot_reload_shaders(optimized=true)
 
-    model, import_ok := obj.import_file("3D models/suzanne.obj")
-    assert(import_ok)
-    append(&g_models, model)
-    defer delete(model.faces)
+    load_models()
 
-    ent := create_entity(0, {0, 0, 7}, 1, "standard")
-    ent.yaw = math.PI
-    ent.roll = math.PI
-    append(&g_entities, ent)
+    for i in 0..<2 {
+        ent := create_entity("suzanne", {0, 0, 7}, 1, "standard")
+        ent.yaw = math.PI
+        ent.roll = math.PI * f32(i)
+        append(&g_entities, ent)
+    }
 
     texture_load_err: image.Error
     g_texture, texture_load_err = png.load_from_file("textures/drawn.png")
@@ -188,6 +205,9 @@ main :: proc() {
             case .UP: g_fov     += 3 if rl.IsKeyDown(.LEFT_CONTROL) else 10
             case .DOWN: g_fov   -= 3 if rl.IsKeyDown(.LEFT_CONTROL) else 10
 
+            case .PAGE_UP:   for &e in g_entities { e.scale *= 1.2 }
+            case .PAGE_DOWN: for &e in g_entities { e.scale /= 1.2 }
+
             case .ZERO..=.SIX: g_selected_thread = int(key - .ONE)
             }
         }
@@ -213,10 +233,10 @@ main :: proc() {
         rl.DrawTexture(rl_texture, 0, 0, rl.WHITE)
         rl.EndDrawing()
 
-        for &e, i in g_entities {
-            s := f32(i+1)
-            e.pitch += 0.01 / s
-            e.yaw += 0.02 * s
+        for &e, _ in g_entities {
+            s := f32(1)
+            e.pitch += 0.01 / s * .3
+            e.yaw += 0.02 * s   * .3
         }
         free_all(context.temp_allocator)
     }    
@@ -280,14 +300,21 @@ delete_globals :: proc() {
         thread.terminate(t, 0)
         thread.destroy(t)
     }
+
     for name, shader in g_shaders {
         delete(name)
         dynlib.unload_library(shader.source)
     }
     delete(g_shaders)
-    
-    delete(g_models)
+
     delete(g_entities)
-    delete(g_target)
+
+    for name, m in g_models {
+        delete(name)
+        delete(m.faces)
+    }
+    delete(g_models)
+
     delete(g_packed_target)
+    delete(g_target)
 }
